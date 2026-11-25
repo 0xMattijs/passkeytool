@@ -404,7 +404,7 @@ function renderCred(c) {
   li.className = "cred" + (c.id === lastUsedCredId ? " active" : "");
   li.innerHTML = `
     <div class="cred-top">
-      <div class="cred-title"><img class="cred-icon" alt="" hidden><span class="cred-name"></span> <span class="tags"></span></div>
+      <div class="cred-title"><span class="cred-name"></span> <span class="tags"></span></div>
       <div class="row">
         <button class="small-btn rename">Rename</button>
         <button class="small-btn danger delete">Delete</button>
@@ -417,9 +417,11 @@ function renderCred(c) {
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
   const icon = (dark ? c.iconDark : c.iconLight) || c.iconLight || c.iconDark;
   if (icon) {
-    const img = $(".cred-icon", li);
+    const img = document.createElement("img");
+    img.className = "cred-icon";
+    img.alt = "";
     img.src = icon;
-    img.hidden = false;
+    $(".cred-title", li).prepend(img);
   }
 
   const tags = $(".tags", li);
