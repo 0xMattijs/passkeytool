@@ -14,7 +14,9 @@ security keys behave with different ceremony options.
   `prf` extensions.
 - Sign-in by username (allow list), discoverable (usernameless), or
   conditional UI (passkeys in username autofill).
-- PRF evaluation at sign-in with a salt you choose. The derived secret is
+- PRF evaluation at sign-in with a salt you choose. Registration requests
+  the `prf` extension by default, which security keys need to support PRF
+  later. The derived secret is
   shown in the log and stripped before the response goes to the server.
 - Multiple passkeys per account, with rename and delete.
 - Per-passkey details: provider name and icon (from the AAGUID), attachment,
@@ -27,6 +29,8 @@ security keys behave with different ceremony options.
   certificate chain (subject, issuer, validity, AAGUID extension, PEM).
 - An options editor that lets you change the options JSON before each
   `navigator.credentials` call, to test edge cases and server checks.
+- Log export as JSON, with the browser, server settings, and capabilities,
+  for bug reports. PRF outputs are redacted.
 - Client capability detection (`getClientCapabilities()`, UVPAA, conditional
   mediation).
 - Signal API calls (`signalUnknownCredential`,

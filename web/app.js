@@ -4,6 +4,9 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 let conditionalAbort = null;
+let config = null;
+const logEntries = []; // for export
+const capabilities = {}; // for export
 let lastUsedCredId = null;
 
 // ---------- base64url ----------
@@ -145,6 +148,12 @@ function decodeCredential(cred) {
 // ---------- logging ----------
 
 function log(kind, msg, data) {
+  logEntries.push({
+    time: new Date().toISOString(),
+    kind,
+    message: msg,
+    data: data === undefined ? undefined : JSON.parse(JSON.stringify(data, binaryReplacer) ?? "null"),
+  });
   const li = document.createElement("li");
   li.className = kind;
   const head = document.createElement("div");
@@ -330,7 +339,7 @@ function logPRF(cred) {
       second: prf.results.second ? hex(prf.results.second) : undefined,
     });
   } else {
-    log("err", "PRF requested but the authenticator returned no output (not supported by this passkey)", prf);
+    log("err", "PRF requested but no output came back. The authenticator may not support PRF, or (for security keys) the passkey was created without the prf extension.", prf);
   }
 }
 
@@ -508,6 +517,28 @@ function renderCerts(certs) {
   return d;
 }
 
+// exportLog downloads the session (environment, capabilities, and every log
+// entry) as JSON, for bug reports. PRF outputs are secrets, so they're removed.
+function exportLog() {
+  const report = {
+    exportedAt: new Date().toISOString(),
+    tool: "passkeys-test",
+    page: location.origin,
+    userAgent: navigator.userAgent,
+    userAgentData: navigator.userAgentData ? { brands: navigator.userAgentData.brands, platform: navigator.userAgentData.platform, mobile: navigator.userAgentData.mobile } : undefined,
+    server: config,
+    capabilities,
+    entries: logEntries.filter((e) => !e.message.startsWith("PRF output")),
+  };
+  const redactPRF = (k, v) => (k === "prf" && v?.results ? { ...v, results: "[redacted]" } : v);
+  const blob = new Blob([JSON.stringify(report, redactPRF, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `passkeys-test-log-${report.exportedAt.replace(/[:.]/g, "-")}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 // Signal API: tell the credential manager which passkeys are still valid.
 async function signalCredentials(user) {
   if (!PublicKeyCredential.signalAllAcceptedCredentials) return;
@@ -530,6 +561,7 @@ async function renderCaps() {
     const dt = document.createElement("dt");
     const dd = document.createElement("dd");
     dt.textContent = k;
+    capabilities[k] = v ?? null;
     if (typeof v === "boolean" || v === undefined) {
       dd.textContent = v === undefined ? "unknown" : v ? "yes" : "no";
       dd.className = v ? "yes" : "no";
@@ -568,7 +600,7 @@ async function init() {
   const tpl = $("#reg-options-tpl");
   for (const slot of $$(".reg-options")) slot.replaceWith(tpl.content.cloneNode(true));
 
-  const cfg = await api("GET", "/api/config");
+  const cfg = (config = await api("GET", "/api/config"));
   $("#rp-info").innerHTML = `RP ID <code></code> · origin <code></code>`;
   const codes = $$("#rp-info code");
   codes[0].textContent = cfg.rpId;
@@ -644,7 +676,11 @@ async function init() {
     }
     render(null);
   };
-  $("#clear-log").onclick = () => { $("#log").innerHTML = '<li class="empty">Log cleared.</li>'; };
+  $("#clear-log").onclick = () => {
+    logEntries.length = 0;
+    $("#log").innerHTML = '<li class="empty">Log cleared.</li>';
+  };
+  $("#export-log").onclick = exportLog;
   $("#log").innerHTML = '<li class="empty">Register or sign in to see each WebAuthn ceremony step.</li>';
 
   renderCaps();
