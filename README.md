@@ -23,6 +23,8 @@ security keys behave with different ceremony options.
 - A ceremony log showing the server options, the decoded `clientDataJSON`,
   the parsed authenticator data flags (UP, UV, BE, BS, AT, ED), extension
   results, and the server's verdict.
+- An options editor that lets you change the options JSON before each
+  `navigator.credentials` call, to test edge cases and server checks.
 - Client capability detection (`getClientCapabilities()`, UVPAA, conditional
   mediation).
 - Signal API calls (`signalUnknownCredential`,

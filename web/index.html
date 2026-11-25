@@ -95,12 +95,31 @@
       <div class="card log-card">
         <div class="log-head">
           <h2>Ceremony log</h2>
-          <button id="clear-log" class="small-btn">Clear</button>
+          <div class="row log-actions">
+            <label class="check small"><input type="checkbox" id="edit-toggle"> Edit options before each ceremony</label>
+            <button id="clear-log" class="small-btn">Clear</button>
+          </div>
         </div>
         <ol class="log" id="log"></ol>
       </div>
     </section>
   </main>
+
+  <dialog id="options-editor">
+    <form method="dialog">
+      <h2 id="editor-title">Edit options</h2>
+      <p class="muted small">This JSON goes to <code id="editor-call"></code> as-is. The server still verifies the
+        response against the challenge and settings it issued, so edits let you test how both sides react.</p>
+      <textarea id="editor-text" spellcheck="false" rows="22"></textarea>
+      <p id="editor-error" class="editor-error" hidden></p>
+      <div class="row editor-buttons">
+        <button value="reset" id="editor-reset" type="button">Reset</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary" id="editor-ok">Continue</button>
+      </div>
+    </form>
+  </dialog>
 
   <template id="reg-options-tpl">
     <details class="options">

@@ -406,7 +406,7 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		delete(sess.Logins, challenge)
 	})
 	if sd == nil {
-		writeError(w, http.StatusBadRequest, errors.New("no login in progress for this challenge"))
+		writeError(w, http.StatusBadRequest, errors.New("unknown or expired challenge: the server did not issue it for a pending sign-in"))
 		return
 	}
 

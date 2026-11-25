@@ -144,3 +144,18 @@ legend { font-size: 12px; color: var(--muted); padding: 0; margin-bottom: 2px; w
   font-size: 12px; overflow: auto; max-height: 420px; margin: 4px 0 0;
 }
 .empty { color: var(--muted); font-size: 13px; }
+
+.log-actions { align-items: center; gap: 12px; }
+
+dialog#options-editor {
+  width: min(760px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--card); color: var(--fg); padding: 18px;
+}
+dialog#options-editor::backdrop { background: rgb(0 0 0 / .45); }
+#editor-text {
+  width: 100%; font: 12px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; padding: 10px;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--code-bg); color: var(--fg); resize: vertical;
+}
+.editor-error { color: var(--err); font-size: 13px; margin: 0; }
+.editor-buttons { align-items: center; }
+.editor-buttons .spacer { flex: 1; }

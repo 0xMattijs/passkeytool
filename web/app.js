@@ -199,6 +199,43 @@ async function api(method, path, body, query) {
   return data;
 }
 
+// ---------- options editor ----------
+
+// maybeEdit lets the user change the options JSON before the browser call.
+// It returns the (possibly edited) JSON, or throws if the user cancels.
+function maybeEdit(call, json) {
+  if (!$("#edit-toggle").checked) return Promise.resolve(json);
+  const dlg = $("#options-editor");
+  const text = $("#editor-text");
+  const err = $("#editor-error");
+  const original = JSON.stringify(json, null, 2);
+  $("#editor-call").textContent = call;
+  text.value = original;
+  err.hidden = true;
+  $("#editor-reset").onclick = () => { text.value = original; err.hidden = true; };
+  $("#editor-ok").onclick = (ev) => {
+    try { JSON.parse(text.value); } catch (e) {
+      ev.preventDefault();
+      err.textContent = `Invalid JSON: ${e.message}`;
+      err.hidden = false;
+    }
+  };
+  dlg.showModal();
+  text.focus();
+  return new Promise((resolve, reject) => {
+    dlg.addEventListener("close", () => {
+      if (dlg.returnValue !== "ok") {
+        log("err", "Ceremony cancelled in the options editor");
+        reject(Object.assign(new Error("cancelled"), { logged: true }));
+        return;
+      }
+      const edited = JSON.parse(text.value);
+      if (text.value.trim() !== original.trim()) log("info", "Options edited before the browser call", edited);
+      resolve(edited);
+    }, { once: true });
+  });
+}
+
 // ---------- ceremonies ----------
 
 function readRegOptions(form) {
@@ -223,8 +260,10 @@ async function register(body, nickname) {
 
   let cred;
   try {
-    cred = await navigator.credentials.create({ publicKey: parseCreationOptions(options.publicKey) });
+    const publicKey = await maybeEdit("navigator.credentials.create()", options.publicKey);
+    cred = await navigator.credentials.create({ publicKey: parseCreationOptions(publicKey) });
   } catch (e) {
+    if (e.logged) throw e;
     log("err", `navigator.credentials.create() failed: ${e.name}: ${ERROR_HINTS[e.name] ?? e.message}`, errorDetails(e));
     throw Object.assign(e, { logged: true });
   }
@@ -249,8 +288,10 @@ async function login({ username, userVerification }) {
 
   let cred;
   try {
-    cred = await navigator.credentials.get({ publicKey: parseRequestOptions(options.publicKey) });
+    const publicKey = await maybeEdit("navigator.credentials.get()", options.publicKey);
+    cred = await navigator.credentials.get({ publicKey: parseRequestOptions(publicKey) });
   } catch (e) {
+    if (e.logged) throw e;
     log("err", `navigator.credentials.get() failed: ${e.name}: ${ERROR_HINTS[e.name] ?? e.message}`, errorDetails(e));
     throw Object.assign(e, { logged: true });
   }
