@@ -1,0 +1,4 @@
+/passkeys-test
+passkeys-data.json
+*.tmp
+.playwright-mcp/

@@ -1,0 +1,88 @@
+# passkeys-test
+
+A self-contained WebAuthn / passkeys test relying party. It's a single Go
+binary: the `serve` command runs a web app for registering and signing in with
+passkeys, and the other commands manage the data file.
+
+Use it to see how browsers, platform authenticators, password managers, and
+security keys behave with different ceremony options.
+
+## Features
+
+- Registration with configurable `residentKey`, `userVerification`,
+  `authenticatorAttachment`, `attestation`, hints, and the `credProps` and
+  `prf` extensions.
+- Sign-in by username (allow list), discoverable (usernameless), or
+  conditional UI (passkeys in username autofill).
+- Multiple passkeys per account, with rename and delete.
+- Per-passkey details: AAGUID and known provider name, attachment,
+  transports, attestation format, backup eligibility and state (synced or
+  device-bound), UV, sign count, and clone warnings.
+- A ceremony log showing the server options, the decoded `clientDataJSON`,
+  the parsed authenticator data flags (UP, UV, BE, BS, AT, ED), extension
+  results, and the server's verdict.
+- Client capability detection (`getClientCapabilities()`, UVPAA, conditional
+  mediation).
+- Signal API calls (`signalUnknownCredential`,
+  `signalAllAcceptedCredentials`) when passkeys are deleted or rejected.
+
+## Build
+
+Requires Go 1.26 or later.
+
+```sh
+go build -o passkeys-test .
+```
+
+## Run
+
+```sh
+./passkeys-test serve
+```
+
+Open <http://localhost:8080>.
+
+WebAuthn requires a secure context. `http://localhost` qualifies; any other
+host needs HTTPS with a certificate the browser trusts, because self-signed
+certificates don't work. To test from a phone or another machine, put the
+server behind a tunnel and set the origin to the public URL:
+
+```sh
+cloudflared tunnel --url http://localhost:8080
+./passkeys-test serve -origin https://example-name.trycloudflare.com
+```
+
+The RP ID defaults to the hostname of the first origin.
+
+### `serve` flags
+
+| Flag        | Default              | Description                                   |
+|-------------|----------------------|-----------------------------------------------|
+| `-addr`     | `localhost:8080`     | Listen address                                |
+| `-origin`   | derived from `-addr` | Allowed origins, comma-separated              |
+| `-rp-id`    | origin hostname      | Relying party ID                              |
+| `-rp-name`  | `Passkeys Test`      | Relying party display name                    |
+| `-data`     | `passkeys-data.json` | Data file (also `PASSKEYS_DATA`)              |
+| `-tls-cert`, `-tls-key` | —        | Serve HTTPS directly                          |
+
+## Manage data
+
+```sh
+./passkeys-test users            # list users
+./passkeys-test users -v         # list users and every passkey
+./passkeys-test delete-user alice
+./passkeys-test delete-credential <credential-id>
+./passkeys-test reset -y         # delete everything
+```
+
+The CLI reads and writes the same JSON file as the server, so changes show
+up in a running server immediately. Deleting a passkey on the server doesn't
+remove it from the authenticator; the web UI sends a Signal API hint where
+the browser supports it.
+
+## Notes
+
+- This is a test tool. Sessions are in memory and the data file is plain
+  JSON. Don't use it as a production relying party.
+- Server-side verification uses
+  [go-webauthn/webauthn](https://github.com/go-webauthn/webauthn).

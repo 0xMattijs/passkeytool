@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Passkeys Test</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔑</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Passkeys Test</h1>
+    <div class="rp" id="rp-info">…</div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <section class="col">
+      <!-- Signed out -->
+      <div class="card" id="signed-out" hidden>
+        <div class="tabs" role="tablist">
+          <button role="tab" data-tab="signin" aria-selected="true">Sign in</button>
+          <button role="tab" data-tab="register" aria-selected="false">Create account</button>
+        </div>
+
+        <form id="signin-form" data-panel="signin">
+          <label>Username <span class="muted">(leave empty for a discoverable passkey)</span>
+            <input name="username" id="signin-username" autocomplete="username webauthn" placeholder="optional" spellcheck="false">
+          </label>
+          <label>User verification
+            <select name="userVerification">
+              <option>preferred</option><option>required</option><option>discouraged</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="conditional-toggle" checked> Offer passkeys in username autofill (conditional UI)</label>
+          <button type="submit" class="primary">Sign in with a passkey</button>
+        </form>
+
+        <form id="register-form" data-panel="register" hidden>
+          <label>Username
+            <input name="username" required autocomplete="username" spellcheck="false" placeholder="alice">
+          </label>
+          <label>Display name
+            <input name="displayName" placeholder="Alice Example">
+          </label>
+          <div class="reg-options"></div>
+          <button type="submit" class="primary">Create account with a passkey</button>
+        </form>
+      </div>
+
+      <!-- Signed in -->
+      <div class="card" id="signed-in" hidden>
+        <div class="user-head">
+          <div>
+            <div class="muted small">Signed in as</div>
+            <div class="user-name" id="user-name"></div>
+            <div class="muted small mono" id="user-id"></div>
+          </div>
+          <div class="row">
+            <button id="logout">Sign out</button>
+          </div>
+        </div>
+
+        <h2>Passkeys</h2>
+        <ul class="creds" id="creds"></ul>
+
+        <details class="add-passkey">
+          <summary>Add another passkey</summary>
+          <form id="add-form">
+            <label>Nickname <span class="muted">(optional)</span>
+              <input name="nickname" placeholder="YubiKey 5C">
+            </label>
+            <div class="reg-options"></div>
+            <button type="submit" class="primary">Add passkey</button>
+          </form>
+        </details>
+
+        <div class="danger-zone">
+          <button id="delete-account" class="danger">Delete account</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Client capabilities</h2>
+        <dl class="caps" id="caps"></dl>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="card log-card">
+        <div class="log-head">
+          <h2>Ceremony log</h2>
+          <button id="clear-log" class="small-btn">Clear</button>
+        </div>
+        <ol class="log" id="log"></ol>
+      </div>
+    </section>
+  </main>
+
+  <template id="reg-options-tpl">
+    <details class="options">
+      <summary>Ceremony options</summary>
+      <div class="grid">
+        <label>Resident key
+          <select name="residentKey"><option>required</option><option>preferred</option><option>discouraged</option></select>
+        </label>
+        <label>User verification
+          <select name="userVerification"><option>preferred</option><option>required</option><option>discouraged</option></select>
+        </label>
+        <label>Authenticator attachment
+          <select name="attachment"><option value="">any</option><option>platform</option><option>cross-platform</option></select>
+        </label>
+        <label>Attestation
+          <select name="attestation"><option>none</option><option>indirect</option><option>direct</option><option>enterprise</option></select>
+        </label>
+      </div>
+      <fieldset>
+        <legend>Hints</legend>
+        <label class="check"><input type="checkbox" name="hints" value="client-device"> client-device</label>
+        <label class="check"><input type="checkbox" name="hints" value="security-key"> security-key</label>
+        <label class="check"><input type="checkbox" name="hints" value="hybrid"> hybrid</label>
+      </fieldset>
+      <fieldset>
+        <legend>Extensions and behavior</legend>
+        <label class="check"><input type="checkbox" name="credProps" checked> credProps</label>
+        <label class="check"><input type="checkbox" name="prf"> prf</label>
+        <label class="check"><input type="checkbox" name="excludeExisting" checked> exclude existing credentials</label>
+      </fieldset>
+    </details>
+  </template>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
