@@ -585,6 +585,7 @@ func credentialView(c StoredCredential) map[string]any {
 		"flags":             c.Flags,
 		"createdAt":         c.CreatedAt,
 		"useCount":          c.UseCount,
+		"attestation":       summarizeAttestation(c.Attestation.Object),
 	}
 	if !c.LastUsedAt.IsZero() {
 		v["lastUsedAt"] = c.LastUsedAt

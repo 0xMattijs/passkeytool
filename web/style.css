@@ -159,3 +159,12 @@ dialog#options-editor::backdrop { background: rgb(0 0 0 / .45); }
 .editor-error { color: var(--err); font-size: 13px; margin: 0; }
 .editor-buttons { align-items: center; }
 .editor-buttons .spacer { flex: 1; }
+
+.certs { margin-top: 8px; font-size: 12px; }
+.certs > summary { font-size: 12px; }
+.cert { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.cert-title { font-weight: 600; }
+.cert pre {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+  font-size: 11px; overflow: auto; margin: 4px 0 0;
+}

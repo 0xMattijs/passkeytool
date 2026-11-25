@@ -432,6 +432,9 @@ function renderCred(c) {
     ["Attachment", c.attachment || "-"],
     ["Transports", (c.transports || []).join(", ") || "-"],
     ["Attestation", `${c.attestationFormat || "-"} / ${c.attestationType || "-"}`],
+    ...(c.attestation && c.attestation.format !== "none"
+      ? [["Statement", `${c.attestation.kind}${c.attestation.algorithm ? `, ${c.attestation.algorithm}` : ""}`]]
+      : []),
     ["Sign count", String(c.signCount)],
     ["Created", fmtDate(c.createdAt)],
     ["Last used", `${fmtDate(c.lastUsedAt)} (${c.useCount}×)`],
@@ -444,6 +447,9 @@ function renderCred(c) {
     dd.textContent = v;
     dl.append(dt, dd);
   }
+
+  const certs = c.attestation?.certificates ?? [];
+  if (certs.length) li.append(renderCerts(certs));
 
   $(".delete", li).onclick = async () => {
     if (!confirm(`Delete passkey "${$(".cred-name", li).textContent}" from the server?\n\nThe passkey stays on your authenticator; remove it there separately.`)) return;
@@ -463,6 +469,43 @@ function renderCred(c) {
     } catch (e) { log("err", e.message); }
   };
   return li;
+}
+
+function renderCerts(certs) {
+  const d = document.createElement("details");
+  d.className = "certs";
+  d.innerHTML = `<summary>Attestation certificates (${certs.length})</summary>`;
+  certs.forEach((cert, i) => {
+    const box = document.createElement("div");
+    box.className = "cert";
+    const rows = [
+      ["Subject", cert.subject],
+      ["Issuer", cert.issuer],
+      ["Valid", `${fmtDate(cert.notBefore)} to ${fmtDate(cert.notAfter)}`],
+      ["Key / signature", `${cert.publicKeyAlgorithm} / ${cert.signatureAlgorithm}`],
+      ["Serial", cert.serial],
+      ["SHA-256", cert.sha256],
+    ];
+    if (cert.aaguid) rows.push(["AAGUID extension", cert.aaguid]);
+    if (cert.isCA) rows.push(["CA", "yes"]);
+    const title = document.createElement("div");
+    title.className = "cert-title";
+    title.textContent = i === 0 ? "Leaf (attestation) certificate" : `Chain certificate ${i}`;
+    const dl = document.createElement("dl");
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt");
+      const dd = document.createElement("dd");
+      dt.textContent = k;
+      dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    const pemD = document.createElement("details");
+    pemD.innerHTML = "<summary>PEM</summary><pre></pre>";
+    $("pre", pemD).textContent = cert.pem;
+    box.append(title, dl, pemD);
+    d.append(box);
+  });
+  return d;
 }
 
 // Signal API: tell the credential manager which passkeys are still valid.

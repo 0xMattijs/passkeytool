@@ -239,6 +239,11 @@ func cmdUsers(args []string) error {
 				fmt.Fprintf(tw, "    attachment\t%s\n", orDefault(string(c.Authenticator.Attachment), "-"))
 				fmt.Fprintf(tw, "    transports\t%v\n", c.Transport)
 				fmt.Fprintf(tw, "    attestation\t%s / %s\n", orDefault(c.AttestationFormat, "-"), orDefault(c.AttestationType, "-"))
+				if a := summarizeAttestation(c.Attestation.Object); a != nil {
+					for i, cert := range a.Certificates {
+						fmt.Fprintf(tw, "    cert[%d]\t%s (issuer: %s)\n", i, cert.Subject, cert.Issuer)
+					}
+				}
 				fmt.Fprintf(tw, "    flags\tUV=%t BE=%t BS=%t\n", c.Flags.UserVerified, c.Flags.BackupEligible, c.Flags.BackupState)
 				fmt.Fprintf(tw, "    signCount\t%d\n", c.Authenticator.SignCount)
 				last := "never"
