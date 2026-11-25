@@ -335,6 +335,7 @@ type loginBeginReq struct {
 	Username         string `json:"username"`
 	UserVerification string `json:"userVerification"`
 	Mediation        string `json:"mediation"`
+	PRFSalt          string `json:"prfSalt"` // evaluate the PRF extension with this salt
 }
 
 func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
@@ -346,6 +347,13 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
 	opts := []webauthn.LoginOption{
 		webauthn.WithUserVerification(protocol.UserVerificationRequirement(orDefault(req.UserVerification, "preferred"))),
+	}
+	if req.PRFSalt != "" {
+		// The browser hashes the salt with a WebAuthn-specific prefix before
+		// passing it to the authenticator, so any bytes work here.
+		opts = append(opts, webauthn.WithAssertionExtensions(
+			webauthn.WithExtensionPRF(protocol.PRFValues{First: []byte(req.PRFSalt)}),
+		))
 	}
 
 	var (

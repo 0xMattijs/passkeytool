@@ -14,6 +14,8 @@ security keys behave with different ceremony options.
   `prf` extensions.
 - Sign-in by username (allow list), discoverable (usernameless), or
   conditional UI (passkeys in username autofill).
+- PRF evaluation at sign-in with a salt you choose. The derived secret is
+  shown in the log and stripped before the response goes to the server.
 - Multiple passkeys per account, with rename and delete.
 - Per-passkey details: provider name and icon (from the AAGUID), attachment,
   transports, attestation format, backup eligibility and state (synced or

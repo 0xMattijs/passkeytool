@@ -34,6 +34,10 @@
             </select>
           </label>
           <label class="check"><input type="checkbox" id="conditional-toggle" checked> Offer passkeys in username autofill (conditional UI)</label>
+          <label class="check"><input type="checkbox" name="prf" id="prf-toggle"> Evaluate PRF (derive a secret from the passkey)</label>
+          <label id="prf-salt-label" hidden>PRF salt
+            <input name="prfSalt" value="passkeys-test" spellcheck="false">
+          </label>
           <button type="submit" class="primary">Sign in with a passkey</button>
         </form>
 

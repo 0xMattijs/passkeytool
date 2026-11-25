@@ -48,10 +48,30 @@ function parseRequestOptions(json) {
     ...json,
     challenge: b64uToBuf(json.challenge),
     allowCredentials: (json.allowCredentials || []).map((c) => ({ ...c, id: b64uToBuf(c.id) })),
+    extensions: decodePRFInputs(json.extensions),
   };
 }
 
+function decodePRFInputs(ext) {
+  const ev = ext?.prf?.eval;
+  if (!ev) return ext;
+  const out = { first: b64uToBuf(ev.first) };
+  if (ev.second) out.second = b64uToBuf(ev.second);
+  return { ...ext, prf: { ...ext.prf, eval: out } };
+}
+
+// credentialToJSON encodes a credential for the server. PRF outputs are
+// secrets meant to stay on the client, so they're removed.
 function credentialToJSON(cred) {
+  const json = encodeCredential(cred);
+  if (json.clientExtensionResults?.prf?.results) {
+    json.clientExtensionResults = { ...json.clientExtensionResults, prf: { ...json.clientExtensionResults.prf } };
+    delete json.clientExtensionResults.prf.results;
+  }
+  return json;
+}
+
+function encodeCredential(cred) {
   // Some password-manager extensions return objects without a working toJSON().
   try { if (typeof cred.toJSON === "function") return cred.toJSON(); } catch (e) { console.warn("toJSON failed", e); }
   const r = cred.response;
@@ -136,12 +156,19 @@ function log(kind, msg, data) {
   if (data !== undefined) {
     const d = document.createElement("details");
     d.innerHTML = "<summary>details</summary><pre></pre>";
-    $("pre", d).textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    $("pre", d).textContent = typeof data === "string" ? data : JSON.stringify(data, binaryReplacer, 2);
     li.append(d);
   }
   const ol = $("#log");
   $(".empty", ol)?.remove();
   ol.prepend(li);
+}
+
+// binaryReplacer shows ArrayBuffers and typed arrays as hex in JSON output.
+function binaryReplacer(_key, value) {
+  if (value instanceof ArrayBuffer) return `hex:${hex(value)}`;
+  if (ArrayBuffer.isView(value)) return `hex:${hex(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))}`;
+  return value;
 }
 
 function errorDetails(e) {
@@ -209,9 +236,13 @@ async function register(body, nickname) {
   return result;
 }
 
+function prfSalt() {
+  return $("#prf-toggle").checked ? $("#signin-form").prfSalt.value : "";
+}
+
 async function login({ username, userVerification }) {
   await stopConditional();
-  const body = { username, userVerification };
+  const body = { username, userVerification, prfSalt: prfSalt() };
   log("info", username ? `Sign-in: requesting options for "${username}"` : "Sign-in: requesting options (discoverable)", body);
   const options = await api("POST", "/api/login/begin", body);
   log("info", "Sign-in: server options (PublicKeyCredentialRequestOptionsJSON)", options);
@@ -243,7 +274,23 @@ async function finishLogin(cred) {
   }
   lastUsedCredId = result.credential.id;
   log("ok", `Signed in as "${result.user.name}"`, result.credential);
+  logPRF(cred);
   return result;
+}
+
+function logPRF(cred) {
+  const prf = cred.getClientExtensionResults?.().prf;
+  if (!prf) return;
+  const first = prf.results?.first;
+  if (first) {
+    log("ok", `PRF output (${first.byteLength} bytes): ${hex(first)}`, {
+      note: "Derived on the client and not sent to the server. The same passkey and salt always give the same output.",
+      first: hex(first),
+      second: prf.results.second ? hex(prf.results.second) : undefined,
+    });
+  } else {
+    log("err", "PRF requested but the authenticator returned no output (not supported by this passkey)", prf);
+  }
 }
 
 // Conditional mediation: passkeys show up in the username field's autofill.
@@ -254,7 +301,7 @@ async function startConditional() {
   const ctrl = new AbortController();
   conditionalAbort = ctrl;
   try {
-    const options = await api("POST", "/api/login/begin", { mediation: "conditional" });
+    const options = await api("POST", "/api/login/begin", { mediation: "conditional", prfSalt: prfSalt() });
     log("info", "Conditional UI armed: focus the username field to see passkeys in autofill", options);
     const cred = await navigator.credentials.get({
       publicKey: parseRequestOptions(options.publicKey),
@@ -469,6 +516,11 @@ async function init() {
       throw e;
     }
   });
+  $("#prf-toggle").onchange = (e) => {
+    $("#prf-salt-label").hidden = !e.target.checked;
+    startConditional();
+  };
+  $("#signin-form").prfSalt.onchange = () => startConditional();
   $("#conditional-toggle").onchange = (e) => (e.target.checked ? startConditional() : stopConditional());
 
   const reg = $("#register-form");
