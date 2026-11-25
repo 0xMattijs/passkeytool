@@ -88,6 +88,20 @@ up in a running server immediately. Deleting a passkey on the server doesn't
 remove it from the authenticator; the web UI sends a Signal API hint where
 the browser supports it.
 
+## Related origins
+
+`serve` publishes a
+[Related Origin Requests](https://passkeys.dev/docs/advanced/related-origins/)
+document at `/.well-known/webauthn`, listing every `-origin`. Browsers fetch
+it from `https://<rp-id>/.well-known/webauthn` when a page on another origin
+uses this RP ID. To test it, serve the same instance on two HTTPS hosts (for
+example, two tunnels to one port) and set the RP ID to the first:
+
+```sh
+./passkeys-test serve -rp-id rp.example.com \
+  -origin https://rp.example.com,https://other.example.net
+```
+
 ## Provider names
 
 Passkey provider names and icons come from the community

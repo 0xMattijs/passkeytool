@@ -68,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	static, _ := fs.Sub(webFS, "web")
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
 
+	mux.HandleFunc("GET /.well-known/webauthn", s.handleRelatedOrigins)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
@@ -145,6 +146,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"rpName":  s.cfg.RPName,
 		"origins": s.cfg.Origins,
 	})
+}
+
+// handleRelatedOrigins serves the Related Origin Requests document, which
+// lets the other configured origins use this RP ID. Browsers fetch it from
+// https://<rp-id>/.well-known/webauthn.
+func (s *Server) handleRelatedOrigins(w http.ResponseWriter, r *http.Request) {
+	doc, err := s.wa.RelatedOrigins()
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("no related origins document: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
