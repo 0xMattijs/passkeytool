@@ -288,9 +288,9 @@ function prfSalt() {
   return $("#prf-toggle").checked ? $("#signin-form").prfSalt.value : "";
 }
 
-async function login({ username, userVerification }) {
+async function login({ username, userVerification, hints }) {
   await stopConditional();
-  const body = { username, userVerification, prfSalt: prfSalt() };
+  const body = { username, userVerification, hints, prfSalt: prfSalt() };
   log("info", username ? `Sign-in: requesting options for "${username}"` : "Sign-in: requesting options (discoverable)", body);
   const options = await api("POST", "/api/login/begin", body);
   log("info", "Sign-in: server options (PublicKeyCredentialRequestOptionsJSON)", options);
@@ -627,7 +627,11 @@ async function init() {
   const signin = $("#signin-form");
   signin.onsubmit = withBusy($("button[type=submit]", signin), async () => {
     try {
-      const r = await login({ username: signin.username.value.trim(), userVerification: signin.userVerification.value });
+      const r = await login({
+        username: signin.username.value.trim(),
+        userVerification: signin.userVerification.value,
+        hints: $$("[name=hints]:checked", signin).map((c) => c.value),
+      });
       render(r.user);
     } catch (e) {
       startConditional();

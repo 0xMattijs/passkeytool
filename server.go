@@ -345,10 +345,11 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 type loginBeginReq struct {
-	Username         string `json:"username"`
-	UserVerification string `json:"userVerification"`
-	Mediation        string `json:"mediation"`
-	PRFSalt          string `json:"prfSalt"` // evaluate the PRF extension with this salt
+	Username         string   `json:"username"`
+	UserVerification string   `json:"userVerification"`
+	Mediation        string   `json:"mediation"`
+	PRFSalt          string   `json:"prfSalt"` // evaluate the PRF extension with this salt
+	Hints            []string `json:"hints"`
 }
 
 func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
@@ -360,6 +361,13 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
 	opts := []webauthn.LoginOption{
 		webauthn.WithUserVerification(protocol.UserVerificationRequirement(orDefault(req.UserVerification, "preferred"))),
+	}
+	if len(req.Hints) > 0 {
+		hints := make([]protocol.PublicKeyCredentialHints, len(req.Hints))
+		for i, h := range req.Hints {
+			hints[i] = protocol.PublicKeyCredentialHints(h)
+		}
+		opts = append(opts, webauthn.WithAssertionPublicKeyCredentialHints(hints))
 	}
 	if req.PRFSalt != "" {
 		// The browser hashes the salt with a WebAuthn-specific prefix before

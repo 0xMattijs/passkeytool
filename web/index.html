@@ -33,6 +33,12 @@
               <option>preferred</option><option>required</option><option>discouraged</option>
             </select>
           </label>
+          <fieldset>
+            <legend>Hints <span class="muted">(which authenticator the browser offers first)</span></legend>
+            <label class="check"><input type="checkbox" name="hints" value="security-key"> security-key</label>
+            <label class="check"><input type="checkbox" name="hints" value="client-device"> client-device</label>
+            <label class="check"><input type="checkbox" name="hints" value="hybrid"> hybrid</label>
+          </fieldset>
           <label class="check"><input type="checkbox" id="conditional-toggle" checked> Offer passkeys in username autofill (conditional UI)</label>
           <label class="check"><input type="checkbox" name="prf" id="prf-toggle"> Evaluate PRF (derive a secret from the passkey)</label>
           <label id="prf-salt-label" hidden>PRF salt

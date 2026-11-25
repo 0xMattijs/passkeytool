@@ -13,7 +13,8 @@ security keys behave with different ceremony options.
   `authenticatorAttachment`, `attestation`, hints, and the `credProps` and
   `prf` extensions.
 - Sign-in by username (allow list), discoverable (usernameless), or
-  conditional UI (passkeys in username autofill).
+  conditional UI (passkeys in username autofill), with optional hints
+  (`security-key`, `client-device`, `hybrid`).
 - PRF evaluation at sign-in with a salt you choose. Registration requests
   the `prf` extension by default, which security keys need to support PRF
   later. The derived secret is
