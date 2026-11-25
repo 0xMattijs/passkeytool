@@ -560,11 +560,14 @@ func userView(u *User) map[string]any {
 }
 
 func credentialView(c StoredCredential) map[string]any {
+	provider := lookupAAGUID(c.Authenticator.AAGUID)
 	v := map[string]any{
 		"id":                b64(c.ID),
 		"nickname":          c.Nickname,
 		"aaguid":            formatAAGUID(c.Authenticator.AAGUID),
-		"aaguidName":        aaguidName(c.Authenticator.AAGUID),
+		"aaguidName":        provider.Name,
+		"iconLight":         provider.IconLight,
+		"iconDark":          provider.IconDark,
 		"attachment":        c.Authenticator.Attachment,
 		"transports":        c.Transport,
 		"attestationType":   c.AttestationType,

@@ -43,6 +43,8 @@ func main() {
 		err = cmdDeleteCredential(args)
 	case "reset":
 		err = cmdReset(args)
+	case "update-aaguids":
+		err = cmdUpdateAAGUIDs(args)
 	case "version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -71,6 +73,7 @@ Commands:
   delete-credential ID
                       Delete one passkey by credential ID (base64url)
   reset               Delete all data
+  update-aaguids      Download the passkey provider (AAGUID) name list
   version             Print the version
 
 Run 'passkeys-test <command> -h' for command flags.
@@ -95,6 +98,7 @@ type serveConfig struct {
 	Data    string
 	TLSCert string
 	TLSKey  string
+	AAGUIDs string
 }
 
 func cmdServe(args []string) error {
@@ -106,6 +110,7 @@ func cmdServe(args []string) error {
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
 	tlsKey := fs.String("tls-key", "", "TLS key file")
 	data := dataFlag(fs)
+	aaguids := fs.String("aaguids", defaultAAGUIDPath(), `AAGUID name list; downloaded on first use ("off" to disable)`)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `Usage: passkeys-test serve [flags]
 
@@ -123,7 +128,7 @@ Flags:
 		return errors.New("-tls-cert and -tls-key must be used together")
 	}
 
-	cfg := serveConfig{Addr: *addr, RPName: *rpName, Data: *data, TLSCert: *tlsCert, TLSKey: *tlsKey}
+	cfg := serveConfig{Addr: *addr, RPName: *rpName, Data: *data, TLSCert: *tlsCert, TLSKey: *tlsKey, AAGUIDs: *aaguids}
 	if *origin == "" {
 		host, port, err := net.SplitHostPort(*addr)
 		if err != nil {
@@ -170,6 +175,9 @@ Flags:
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.AAGUIDs != "off" {
+		go initAAGUIDs(ctx, cfg.AAGUIDs)
+	}
 	errc := make(chan error, 1)
 	go func() {
 		if cfg.TLSCert != "" {
@@ -204,6 +212,7 @@ func cmdUsers(args []string) error {
 	verbose := fs.Bool("v", false, "show each passkey")
 	_ = fs.Parse(args)
 
+	_, _ = loadAAGUIDs(defaultAAGUIDPath())
 	return NewStore(*data).View(func(d *storeData) error {
 		if len(d.Users) == 0 {
 			fmt.Println("no users")
@@ -300,5 +309,37 @@ func cmdReset(args []string) error {
 		return err
 	}
 	fmt.Println("all data deleted")
+	return nil
+}
+
+// initAAGUIDs loads the AAGUID list, downloading it first if it's missing.
+func initAAGUIDs(ctx context.Context, path string) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		log.Printf("downloading AAGUID list to %s", path)
+		if err := downloadAAGUIDs(ctx, path); err != nil {
+			log.Printf("AAGUID list download failed, using built-in names: %v", err)
+			return
+		}
+	}
+	n, err := loadAAGUIDs(path)
+	if err != nil {
+		log.Printf("AAGUID list not loaded, using built-in names: %v", err)
+		return
+	}
+	log.Printf("loaded %d AAGUID names from %s", n, path)
+}
+
+func cmdUpdateAAGUIDs(args []string) error {
+	fs := flag.NewFlagSet("update-aaguids", flag.ExitOnError)
+	path := fs.String("file", defaultAAGUIDPath(), "where to store the list")
+	_ = fs.Parse(args)
+	if err := downloadAAGUIDs(context.Background(), *path); err != nil {
+		return err
+	}
+	n, err := loadAAGUIDs(*path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("saved %d AAGUID names to %s\n", n, *path)
 	return nil
 }

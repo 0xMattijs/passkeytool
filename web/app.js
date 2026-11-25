@@ -307,7 +307,7 @@ function renderCred(c) {
   li.className = "cred" + (c.id === lastUsedCredId ? " active" : "");
   li.innerHTML = `
     <div class="cred-top">
-      <div><span class="cred-name"></span> <span class="tags"></span></div>
+      <div class="cred-title"><img class="cred-icon" alt="" hidden><span class="cred-name"></span> <span class="tags"></span></div>
       <div class="row">
         <button class="small-btn rename">Rename</button>
         <button class="small-btn danger delete">Delete</button>
@@ -317,6 +317,13 @@ function renderCred(c) {
     <dl></dl>`;
   $(".cred-name", li).textContent = c.nickname || c.aaguidName || "Unnamed passkey";
   $(".cred-id", li).textContent = c.id;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const icon = (dark ? c.iconDark : c.iconLight) || c.iconLight || c.iconDark;
+  if (icon) {
+    const img = $(".cred-icon", li);
+    img.src = icon;
+    img.hidden = false;
+  }
 
   const tags = $(".tags", li);
   const tag = (text, cls = "") => {

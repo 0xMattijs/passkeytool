@@ -15,7 +15,7 @@ security keys behave with different ceremony options.
 - Sign-in by username (allow list), discoverable (usernameless), or
   conditional UI (passkeys in username autofill).
 - Multiple passkeys per account, with rename and delete.
-- Per-passkey details: AAGUID and known provider name, attachment,
+- Per-passkey details: provider name and icon (from the AAGUID), attachment,
   transports, attestation format, backup eligibility and state (synced or
   device-bound), UV, sign count, and clone warnings.
 - A ceremony log showing the server options, the decoded `clientDataJSON`,
@@ -64,6 +64,7 @@ The RP ID defaults to the hostname of the first origin.
 | `-rp-name`  | `Passkeys Test`      | Relying party display name                    |
 | `-data`     | `passkeys-data.json` | Data file (also `PASSKEYS_DATA`)              |
 | `-tls-cert`, `-tls-key` | —        | Serve HTTPS directly                          |
+| `-aaguids`  | user cache dir       | AAGUID name list, or `off`                    |
 
 ## Manage data
 
@@ -73,12 +74,21 @@ The RP ID defaults to the hostname of the first origin.
 ./passkeys-test delete-user alice
 ./passkeys-test delete-credential <credential-id>
 ./passkeys-test reset -y         # delete everything
+./passkeys-test update-aaguids   # refresh the provider name list
 ```
 
 The CLI reads and writes the same JSON file as the server, so changes show
 up in a running server immediately. Deleting a passkey on the server doesn't
 remove it from the authenticator; the web UI sends a Signal API hint where
 the browser supports it.
+
+## Provider names
+
+Passkey provider names and icons come from the community
+[passkey-authenticator-aaguids](https://github.com/passkeydeveloper/passkey-authenticator-aaguids)
+list. `serve` downloads it to your user cache directory the first time it
+runs; `update-aaguids` refreshes it. Without the list, a few built-in names
+are used.
 
 ## Notes
 
