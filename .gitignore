@@ -2,3 +2,4 @@
 passkeys-data.json
 *.tmp
 .playwright-mcp/
+/e2e/node_modules/

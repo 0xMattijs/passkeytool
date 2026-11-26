@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.RPName}}</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 28rem; margin: 3rem auto; padding: 0 1rem; color-scheme: light dark; }
+    input, button { font: inherit; padding: .5rem .75rem; }
+    input { width: 100%; box-sizing: border-box; margin: .25rem 0 .75rem; }
+    .row { display: flex; gap: .5rem; flex-wrap: wrap; }
+    #status { margin-top: 1rem; min-height: 1.5em; }
+    .error { color: #c62828; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1>{{.RPName}}</h1>
+
+  <section id="signed-out" hidden>
+    <label for="username">Username</label>
+    <input id="username" autocomplete="username{{if .ConditionalUI}} webauthn{{end}}" spellcheck="false">
+    <div class="row">
+      <button id="signin">Sign in with a passkey</button>
+      <button id="register">Create account</button>
+    </div>
+  </section>
+
+  <section id="signed-in" hidden>
+    <p>Signed in as <strong id="who"></strong>.</p>
+    <div class="row">
+      <button id="add-passkey">Add a passkey</button>
+      <button id="signout">Sign out</button>
+    </div>
+  </section>
+
+  <p id="status" role="status"></p>
+
+  <script type="module">
+    import { register, signIn, signOut, currentUser{{if .ConditionalUI}}, startAutofill{{end}} } from "./webauthn.js";
+
+    const $ = (id) => document.getElementById(id);
+    const status = (text, isError = false) => {
+      $("status").textContent = text;
+      $("status").className = isError ? "error" : "";
+    };
+{{- if .ConditionalUI}}
+    let autofill;
+{{- end}}
+
+    async function show(user) {
+      $("signed-in").hidden = !user;
+      $("signed-out").hidden = !!user;
+      if (user) $("who").textContent = user.username;
+{{- if .ConditionalUI}}
+      autofill?.abort();
+      if (!user) {
+        autofill = new AbortController();
+        startAutofill(autofill.signal)
+          .then((result) => result && signedIn(result))
+          .catch((e) => { if (e.name !== "AbortError") status(e.message, true); });
+      }
+{{- end}}
+    }
+
+    function signedIn(result) {
+      let text = `Signed in as ${result.username}.`;
+{{- if .PRF}}
+      if ("prfOutput" in result) text += result.prfOutput ? " PRF secret derived." : " This passkey can't derive a PRF secret.";
+      if ("prfEnabled" in result) text += result.prfEnabled ? " PRF supported." : " PRF not supported by this passkey.";
+{{- end}}
+      status(text);
+      show(result);
+    }
+
+    // run wraps a button handler: it reports errors and cancels autofill
+    // first, because only one passkey request can be pending.
+    function run(fn) {
+      return async () => {
+{{- if .ConditionalUI}}
+        autofill?.abort();
+{{- end}}
+        status("");
+        try {
+          await fn();
+        } catch (e) {
+          // NotAllowedError covers both "the user canceled" and "no passkey matched".
+          status(e.name === "NotAllowedError" ? "The passkey request was canceled or timed out." : e.message, true);
+          show(await currentUser());
+        }
+      };
+    }
+
+    $("register").onclick = run(async () => {
+      const username = $("username").value.trim();
+      if (!username) throw new Error("Enter a username.");
+      signedIn(await register(username));
+    });
+    $("signin").onclick = run(async () => signedIn(await signIn($("username").value.trim())));
+    $("add-passkey").onclick = run(async () => {
+      await register();
+      status("Passkey added.");
+    });
+    $("signout").onclick = run(async () => {
+      await signOut();
+      status("Signed out.");
+      show(null);
+    });
+
+    show(await currentUser());
+  </script>
+</body>
+</html>

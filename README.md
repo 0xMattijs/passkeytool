@@ -35,6 +35,9 @@ security keys behave with different ceremony options.
 - Client capability detection (`getClientCapabilities()`, UVPAA, conditional
   mediation). Each capability has a **(?)** button that explains what it
   means and which part of the page uses it.
+- A Developer tab that generates a complete, tested passkey app (Go or
+  Node.js) for the options you choose. See
+  [Developer tab and code generator](#developer-tab-and-code-generator).
 - A "Manage passkeys" card that detects your browser and OS and lists their
   built-in pages for managing passkeys and security keys, such as
   `chrome://settings/securityKeys`, `about:webauthn`, or Windows passkey
@@ -130,6 +133,35 @@ server can sign you in with it. With several keys connected, choose one with
 `-device /dev/hidrawN`. The key must support CTAP 2.1 credential management
 and have a PIN set. If you get a permission error, install your
 distribution's FIDO udev rules, for example from the `libfido2` package.
+
+## Developer tab and code generator
+
+The **Developer** tab generates a complete passkey app for the options you
+choose: a server, a dependency-free browser client, and a SQLite schema. It
+lists warnings about risky option combinations, keeps the configuration in
+the URL so you can share a link, and downloads the project as a zip. The
+generated code is licensed 0BSD.
+
+| Server | Library | Stack |
+|--------|---------|-------|
+| Go | go-webauthn/webauthn | net/http, modernc.org/sqlite |
+| Node.js | @simplewebauthn/server | Express 5, node:sqlite |
+
+The same generator is on the command line:
+
+```sh
+./passkeys-test codegen -lang node -out ./my-app -spec '{"prf":true,"hints":["security-key"]}'
+```
+
+Every server implements the same HTTP API, so one client and one test
+cover them all. `go test` renders every option combination for every
+language, and the end-to-end suite builds and runs generated apps, then
+registers and signs in with Chromium's virtual authenticator:
+
+```sh
+cd e2e && npm install && npm test          # all languages
+npm test -- go                             # one language
+```
 
 ## Related origins
 

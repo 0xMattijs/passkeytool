@@ -882,6 +882,205 @@ function renderManagement() {
   }
 }
 
+// ---------- developer view ----------
+
+const dev = { targets: [], defaults: null, result: null, file: 0, timer: 0, seq: 0 };
+
+function showView() {
+  const isDev = location.hash.startsWith("#developer");
+  $("#view-test").hidden = isDev;
+  $("#view-dev").hidden = !isDev;
+  for (const a of $$(".views a")) {
+    if ((a.dataset.view === "dev") === isDev) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
+  if (isDev) initDeveloper();
+}
+
+// devSpec reads the form into a codegen spec.
+function devSpec() {
+  const f = $("#dev-form");
+  return {
+    language: f.language.value,
+    rpName: f.rpName.value.trim(),
+    origin: f.origin.value.trim(),
+    rpId: f.rpId.value.trim(),
+    residentKey: f.residentKey.value,
+    userVerification: f.userVerification.value,
+    attachment: f.attachment.value,
+    attestation: f.attestation.value,
+    hints: [...f.querySelectorAll("input[name=hints]:checked")].map((i) => i.value),
+    conditionalUI: f.conditionalUI.checked,
+    credProps: f.credProps.checked,
+    prf: f.prf.checked,
+    excludeExisting: f.excludeExisting.checked,
+  };
+}
+
+function setDevSpec(spec) {
+  const f = $("#dev-form");
+  for (const k of ["language", "rpName", "origin", "rpId", "residentKey", "userVerification", "attachment", "attestation"]) {
+    if (spec[k] !== undefined) f[k].value = spec[k];
+  }
+  for (const k of ["conditionalUI", "credProps", "prf", "excludeExisting"]) {
+    if (spec[k] !== undefined) f[k].checked = !!spec[k];
+  }
+  const hints = spec.hints ?? [];
+  for (const i of f.querySelectorAll("input[name=hints]")) i.checked = hints.includes(i.value);
+}
+
+// The configuration lives in the URL, so a link reproduces it. Only values
+// that differ from the defaults are included.
+function devHash(spec) {
+  const base = { ...dev.defaults, hints: dev.defaults.hints ?? [] };
+  const diff = {};
+  for (const [k, v] of Object.entries(spec)) {
+    if (JSON.stringify(v) !== JSON.stringify(base[k])) diff[k] = v;
+  }
+  return Object.keys(diff).length ? `#developer=${encodeURIComponent(JSON.stringify(diff))}` : "#developer";
+}
+
+function specFromHash() {
+  const m = /^#developer=(.+)$/.exec(location.hash);
+  if (!m) return {};
+  try {
+    return JSON.parse(decodeURIComponent(m[1]));
+  } catch {
+    return {};
+  }
+}
+
+async function initDeveloper() {
+  if (dev.defaults) {
+    // A link opened in this page: apply its options. (generate() updates
+    // the URL with replaceState, which doesn't fire hashchange.)
+    setDevSpec({ ...dev.defaults, ...specFromHash() });
+    generate();
+    return;
+  }
+  const { targets, defaults } = await api("GET", "/api/codegen/targets");
+  dev.targets = targets;
+  dev.defaults = defaults;
+  const sel = $("#dev-lang");
+  for (const t of targets) sel.add(new Option(`${t.name} (${t.library})`, t.id));
+  setDevSpec({ ...defaults, ...specFromHash() });
+  $("#dev-form").addEventListener("input", scheduleGenerate);
+  $("#dev-form").addEventListener("change", scheduleGenerate);
+  $("#dev-reset").addEventListener("click", () => {
+    setDevSpec(dev.defaults);
+    generate();
+  });
+  $("#dev-from-test").addEventListener("click", () => {
+    // The options of the Create account form on the Test view.
+    const f = $("#register-form");
+    setDevSpec({
+      rpName: config.rpName,
+      origin: config.origins[0],
+      rpId: config.rpId,
+      residentKey: f.residentKey.value,
+      userVerification: f.userVerification.value,
+      attachment: f.attachment.value,
+      attestation: f.attestation.value,
+      hints: [...f.querySelectorAll("input[name=hints]:checked")].map((i) => i.value),
+      credProps: f.credProps.checked,
+      prf: f.prf.checked,
+      excludeExisting: f.excludeExisting.checked,
+      conditionalUI: $("#conditional-toggle").checked,
+    });
+    generate();
+  });
+  $("#dev-copy").addEventListener("click", (e) => copyText(e.target, dev.result?.files[dev.file]?.content ?? ""));
+  $("#dev-share").addEventListener("click", (e) => copyText(e.target, location.href));
+  $("#dev-zip").addEventListener("click", downloadZip);
+  generate();
+}
+
+function scheduleGenerate() {
+  clearTimeout(dev.timer);
+  dev.timer = setTimeout(generate, 150);
+}
+
+async function generate() {
+  const spec = devSpec();
+  history.replaceState(null, "", devHash(spec));
+  const target = dev.targets.find((t) => t.id === spec.language);
+  const lib = $("#dev-lib");
+  lib.replaceChildren();
+  if (target) {
+    const a = document.createElement("a");
+    a.href = target.libraryUrl;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = `${target.library} ${target.version}`;
+    lib.append(a, ` · ${target.framework}`);
+  }
+  const seq = ++dev.seq;
+  const res = await fetch("/api/codegen", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spec) });
+  const data = await res.json();
+  if (seq !== dev.seq) return; // a newer request is on its way
+  if (!res.ok) {
+    renderDevNotes([{ level: "error", text: data.error }]);
+    return;
+  }
+  const previous = dev.result?.files[dev.file]?.path;
+  dev.result = data;
+  dev.file = Math.max(0, data.files.findIndex((f) => f.path === previous));
+  renderDevNotes(data.notes.length ? data.notes : [{ level: "ok", text: "No issues found with these options." }]);
+  $("#dev-run").textContent = `# Run it\n${data.target.run.join("\n")}\n# then open ${data.spec.origin}`;
+  renderDevFiles();
+}
+
+function renderDevNotes(notes) {
+  const ul = $("#dev-notes");
+  ul.replaceChildren();
+  for (const n of notes) {
+    const li = document.createElement("li");
+    li.className = n.level;
+    li.textContent = n.text;
+    ul.append(li);
+  }
+}
+
+function renderDevFiles() {
+  const tabs = $("#dev-files");
+  tabs.replaceChildren();
+  dev.result.files.forEach((f, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.textContent = f.path;
+    b.setAttribute("aria-selected", String(i === dev.file));
+    b.addEventListener("click", () => {
+      dev.file = i;
+      renderDevFiles();
+    });
+    tabs.append(b);
+  });
+  $("#dev-code").textContent = dev.result.files[dev.file].content;
+}
+
+async function downloadZip() {
+  const spec = devSpec();
+  const res = await fetch("/api/codegen?format=zip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spec) });
+  if (!res.ok) return renderDevNotes([{ level: "error", text: (await res.json()).error }]);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = `passkeys-${spec.language}.zip`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function copyText(button, text) {
+  const label = button.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  setTimeout(() => (button.textContent = label), 1500);
+}
+
 // ---------- wiring ----------
 
 function withBusy(btn, fn) {
@@ -986,6 +1185,8 @@ async function init() {
 
   renderCaps();
   renderManagement();
+  window.addEventListener("hashchange", showView);
+  showView();
   const me = await api("GET", "/api/me");
   render(me.user);
 }

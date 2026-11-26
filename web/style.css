@@ -186,3 +186,34 @@ dialog#options-editor::backdrop { background: rgb(0 0 0 / .45); }
 .manage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 2px; }
 .manage-head code { font-size: 12px; padding: 1px 6px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; }
 .small-link { font-size: 12px; color: var(--accent); }
+
+/* view switch */
+.views { display: flex; gap: 4px; margin-right: auto; margin-left: 16px; }
+.views a { padding: 4px 10px; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 14px; }
+.views a[aria-current="page"] { color: var(--fg); background: var(--code-bg); font-weight: 600; }
+
+/* developer view */
+main.dev { grid-template-columns: minmax(320px, 400px) 1fr; }
+.dev-form { display: flex; flex-direction: column; gap: 12px; }
+.dev-form > label, .dev-group > label:not(.check) { width: 100%; }
+.dev-group { flex-direction: column; flex-wrap: nowrap; gap: 8px; }
+.dev-group .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dev-group label.check { margin: 0; }
+#dev-lib { margin: -6px 0 0; }
+.dev-actions { flex-wrap: wrap; }
+.dev-notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.dev-notes li { display: flex; gap: 8px; align-items: baseline; }
+.dev-notes li::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transform: translateY(-1px); }
+.dev-notes li.warn::before { background: var(--warn); }
+.dev-notes li.error::before { background: var(--err); }
+.dev-notes li.ok::before { background: var(--ok); }
+.dev-code-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.dev-code-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.dev-files { margin-bottom: 0; flex-wrap: wrap; border-bottom: none; }
+.dev-files button { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.dev-run, .dev-code {
+  margin: 0; padding: 12px 14px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12.5px; line-height: 1.5; overflow: auto;
+}
+.dev-run { color: var(--muted); }
+.dev-code { max-height: calc(100vh - 220px); min-height: 300px; tab-size: 2; }

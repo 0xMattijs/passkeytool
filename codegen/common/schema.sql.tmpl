@@ -1,0 +1,24 @@
+-- Passkey storage, shared by every generated server.
+
+CREATE TABLE IF NOT EXISTS users (
+  id           BLOB PRIMARY KEY,        -- WebAuthn user handle: 32 random bytes, never personal data
+  name         TEXT NOT NULL UNIQUE,    -- username
+  display_name TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS credentials (
+  id              BLOB PRIMARY KEY,     -- credential ID
+  user_id         BLOB NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  public_key      BLOB NOT NULL,        -- COSE-encoded public key
+  sign_count      INTEGER NOT NULL DEFAULT 0,
+  transports      TEXT NOT NULL DEFAULT '', -- comma-separated, passed back to the browser as a hint
+  backup_eligible INTEGER NOT NULL,     -- BE flag: can this passkey be synced? Fixed for its lifetime.
+  backup_state    INTEGER NOT NULL,     -- BS flag: is it currently synced?
+  aaguid          BLOB,                 -- identifies the authenticator model or passkey provider
+  attestation_fmt TEXT NOT NULL DEFAULT 'none',
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  last_used_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS credentials_user_id ON credentials(user_id);

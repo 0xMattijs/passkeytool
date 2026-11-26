@@ -71,6 +71,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/webauthn", s.handleRelatedOrigins)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /api/codegen/targets", s.handleCodegenTargets)
+	mux.HandleFunc("POST /api/codegen", s.handleCodegen)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/register/begin", s.handleRegisterBegin)
 	mux.HandleFunc("POST /api/register/finish", s.handleRegisterFinish)

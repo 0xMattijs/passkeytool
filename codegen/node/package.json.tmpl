@@ -1,0 +1,12 @@
+{
+  "name": "passkeys",
+  "private": true,
+  "type": "module",
+  "license": "0BSD",
+  "engines": { "node": ">={{.Versions.node}}" },
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "@simplewebauthn/server": "{{.Versions.simpleWebAuthn}}",
+    "express": "{{.Versions.express}}"
+  }
+}

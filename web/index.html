@@ -10,12 +10,16 @@
 <body>
   <header>
     <h1>Passkeys Test</h1>
+    <nav class="views" aria-label="View">
+      <a href="#" data-view="test">Test</a>
+      <a href="#developer" data-view="dev">Developer</a>
+    </nav>
     <div class="rp" id="rp-info">…</div>
   </header>
 
   <div id="banner" class="banner" hidden></div>
 
-  <main>
+  <main id="view-test">
     <section class="col">
       <!-- Signed out -->
       <div class="card" id="signed-out" hidden>
@@ -114,6 +118,87 @@
           </div>
         </div>
         <ol class="log" id="log"></ol>
+      </div>
+    </section>
+  </main>
+
+  <main id="view-dev" class="dev" hidden>
+    <section class="col">
+      <div class="card">
+        <h2>Generate an app</h2>
+        <p class="muted small">A complete, tested passkey app with the options below: server, browser
+          client, and SQLite schema. Licensed 0BSD, so you can use it without attribution.</p>
+        <form id="dev-form" class="dev-form">
+          <label>Server
+            <select name="language" id="dev-lang"></select>
+          </label>
+          <p class="small muted" id="dev-lib"></p>
+
+          <fieldset class="dev-group">
+            <legend>Relying party</legend>
+            <label>Name <input name="rpName" spellcheck="false"></label>
+            <label>Origin <input name="origin" spellcheck="false" placeholder="https://example.com"></label>
+            <label>RP ID <input name="rpId" spellcheck="false" placeholder="the origin's host"></label>
+          </fieldset>
+
+          <fieldset class="dev-group">
+            <legend>Ceremony options</legend>
+            <div class="grid">
+              <label>Resident key
+                <select name="residentKey"><option>required</option><option>preferred</option><option>discouraged</option></select>
+              </label>
+              <label>User verification
+                <select name="userVerification"><option>preferred</option><option>required</option><option>discouraged</option></select>
+              </label>
+              <label>Authenticator attachment
+                <select name="attachment"><option value="">any</option><option>platform</option><option>cross-platform</option></select>
+              </label>
+              <label>Attestation
+                <select name="attestation"><option>none</option><option>indirect</option><option>direct</option><option>enterprise</option></select>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="dev-group">
+            <legend>Hints</legend>
+            <label class="check"><input type="checkbox" name="hints" value="security-key"> security-key</label>
+            <label class="check"><input type="checkbox" name="hints" value="client-device"> client-device</label>
+            <label class="check"><input type="checkbox" name="hints" value="hybrid"> hybrid</label>
+          </fieldset>
+
+          <fieldset class="dev-group">
+            <legend>Features</legend>
+            <label class="check"><input type="checkbox" name="conditionalUI"> Passkeys in username autofill</label>
+            <label class="check"><input type="checkbox" name="credProps"> credProps extension</label>
+            <label class="check"><input type="checkbox" name="prf"> PRF: derive an encryption secret at sign-in</label>
+            <label class="check"><input type="checkbox" name="excludeExisting"> Exclude already registered authenticators</label>
+          </fieldset>
+
+          <div class="row dev-actions">
+            <button type="button" id="dev-from-test">Use the Create account options</button>
+            <button type="button" id="dev-reset">Reset</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Checks</h2>
+        <ul class="dev-notes" id="dev-notes"></ul>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="card dev-code-card">
+        <div class="dev-code-head">
+          <div class="tabs dev-files" id="dev-files" role="tablist"></div>
+          <div class="row">
+            <button type="button" class="small-btn" id="dev-copy">Copy file</button>
+            <button type="button" class="small-btn" id="dev-share">Copy link</button>
+            <button type="button" class="small-btn primary" id="dev-zip">Download .zip</button>
+          </div>
+        </div>
+        <pre class="dev-run" id="dev-run"></pre>
+        <pre class="dev-code" id="dev-code" tabindex="0"></pre>
       </div>
     </section>
   </main>

@@ -47,6 +47,8 @@ func main() {
 		err = cmdUpdateAAGUIDs(args)
 	case "key":
 		err = cmdKey(args)
+	case "codegen":
+		err = cmdCodegen(args)
 	case "version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -77,7 +79,8 @@ Commands:
   reset               Delete all data
   update-aaguids      Download the passkey provider (AAGUID) name list
   key                 Manage passkeys on a USB security key (devices, info,
-                      ls, rm)
+                      ls, rm, pin, reset)
+  codegen             Generate a complete passkey app (server, client, schema)
   version             Print the version
 
 Run 'passkeys-test <command> -h' for command flags.

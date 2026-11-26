@@ -1,0 +1,156 @@
+// Passkey client for the {{.RPName}} server. No dependencies.
+//
+// Each ceremony is two round trips: the server sends options with a fresh
+// challenge, the browser asks an authenticator to create or sign, and the
+// server verifies the result.
+
+// ---------- encoding ----------
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64urlToBuffer(value) {
+  const b64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const s = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0)).buffer;
+}
+
+// The server sends options as JSON, with binary fields in base64url. Current
+// browsers convert them with parse*OptionsFromJSON; older ones need the
+// fields decoded by hand.
+function parseCreationOptions(json) {
+  if (PublicKeyCredential.parseCreationOptionsFromJSON) {
+    return PublicKeyCredential.parseCreationOptionsFromJSON(json);
+  }
+  return {
+    ...json,
+    challenge: base64urlToBuffer(json.challenge),
+    user: { ...json.user, id: base64urlToBuffer(json.user.id) },
+    excludeCredentials: (json.excludeCredentials ?? []).map((c) => ({ ...c, id: base64urlToBuffer(c.id) })),
+  };
+}
+
+function parseRequestOptions(json) {
+  if (PublicKeyCredential.parseRequestOptionsFromJSON) {
+    return PublicKeyCredential.parseRequestOptionsFromJSON(json);
+  }
+  const options = {
+    ...json,
+    challenge: base64urlToBuffer(json.challenge),
+    allowCredentials: (json.allowCredentials ?? []).map((c) => ({ ...c, id: base64urlToBuffer(c.id) })),
+  };
+{{- if .PRF}}
+  const prf = json.extensions?.prf?.eval;
+  if (prf) options.extensions = { ...json.extensions, prf: { eval: { first: base64urlToBuffer(prf.first) } } };
+{{- end}}
+  return options;
+}
+
+// credentialToJSON encodes a credential for the server.
+function credentialToJSON(credential) {
+  let json;
+  try {
+    json = credential.toJSON();
+  } catch {
+    const r = credential.response;
+    json = {
+      id: credential.id,
+      rawId: bufferToBase64url(credential.rawId),
+      type: credential.type,
+      authenticatorAttachment: credential.authenticatorAttachment ?? undefined,
+      clientExtensionResults: credential.getClientExtensionResults(),
+      response: r.attestationObject
+        ? {
+            clientDataJSON: bufferToBase64url(r.clientDataJSON),
+            attestationObject: bufferToBase64url(r.attestationObject),
+            transports: r.getTransports?.() ?? [],
+          }
+        : {
+            clientDataJSON: bufferToBase64url(r.clientDataJSON),
+            authenticatorData: bufferToBase64url(r.authenticatorData),
+            signature: bufferToBase64url(r.signature),
+            userHandle: r.userHandle ? bufferToBase64url(r.userHandle) : undefined,
+          },
+    };
+  }
+{{- if .PRF}}
+  // The PRF output is a client-side secret: never send it to the server.
+  if (json.clientExtensionResults?.prf) delete json.clientExtensionResults.prf.results;
+{{- end}}
+  return json;
+}
+
+async function post(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `${res.status} ${res.statusText}`);
+  return data;
+}
+
+// ---------- ceremonies ----------
+
+// register creates an account with a passkey, or adds a passkey to the
+// signed-in account.
+export async function register(username, displayName) {
+  const options = await post("/api/register/begin", { username, displayName });
+  const credential = await navigator.credentials.create({ publicKey: parseCreationOptions(options) });
+  const result = await post("/api/register/finish", credentialToJSON(credential));
+{{- if .PRF}}
+  // Whether this passkey can derive secrets at sign-in.
+  result.prfEnabled = credential.getClientExtensionResults().prf?.enabled ?? false;
+{{- end}}
+  return result;
+}
+
+// signIn signs in with a passkey. Without a username, the browser offers
+// every passkey it has for this site.
+export async function signIn(username = "") {
+  const options = await post("/api/login/begin", { username });
+  const credential = await navigator.credentials.get({ publicKey: parseRequestOptions(options) });
+  return finishSignIn(credential);
+}
+{{- if .ConditionalUI}}
+
+// startAutofill offers passkeys in the autofill menu of inputs with
+// autocomplete="username webauthn". It resolves when the user picks one,
+// and rejects with an AbortError when signal aborts. Abort it before
+// calling signIn, because a page can only have one request pending.
+export async function startAutofill(signal) {
+  if (!(await PublicKeyCredential.isConditionalMediationAvailable?.())) return null;
+  const options = await post("/api/login/begin", {});
+  const credential = await navigator.credentials.get({
+    publicKey: parseRequestOptions(options),
+    mediation: "conditional",
+    signal,
+  });
+  return finishSignIn(credential);
+}
+{{- end}}
+
+async function finishSignIn(credential) {
+  const result = await post("/api/login/finish", credentialToJSON(credential));
+{{- if .PRF}}
+  // A secret derived from the passkey and the server's salt: the same
+  // passkey always yields the same value. Use it as key material, for
+  // example with crypto.subtle.importKey("raw", prfOutput, "HKDF", ...).
+  result.prfOutput = credential.getClientExtensionResults().prf?.results?.first ?? null;
+{{- end}}
+  return result;
+}
+
+export async function currentUser() {
+  const res = await fetch("/api/me");
+  return res.ok ? res.json() : null;
+}
+
+export async function signOut() {
+  await post("/api/logout");
+}

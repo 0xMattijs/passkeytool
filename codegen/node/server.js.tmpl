@@ -1,0 +1,302 @@
+// Passkey sign-in server for {{.RPName}}, built with @simplewebauthn/server.
+// It serves the page in public/ and stores data in SQLite (node:sqlite).
+
+import express from "express";
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+} from "@simplewebauthn/server";
+
+const RP_ID = {{json .RPID}};
+const RP_NAME = {{json .RPName}};
+const ORIGIN = {{json .Origin}};
+const USER_VERIFICATION = {{json .UserVerification}};
+const PORT = process.env.PORT ?? {{json .Port}};
+{{- if .PRF}}
+// Salt for deriving a secret from the passkey (PRF). It can be per user or
+// per purpose; the same passkey and salt always give the same secret.
+const PRF_SALT = Buffer.from({{json .PRFSalt}});
+{{- end}}
+
+const db = new DatabaseSync("passkeys.db");
+db.exec("PRAGMA foreign_keys = ON");
+db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+
+const toBase64url = (bytes) => Buffer.from(bytes).toString("base64url");
+const fromBase64url = (text) => Buffer.from(text, "base64url");
+
+// ---------- users and credentials ----------
+
+function loadUser(column, value) {
+  const user = db.prepare(`SELECT id, name, display_name FROM users WHERE ${column} = ?`).get(value);
+  if (!user) return null;
+  user.credentials = db
+    .prepare("SELECT id, transports FROM credentials WHERE user_id = ?")
+    .all(user.id)
+    .map((c) => ({ id: toBase64url(c.id), transports: c.transports ? c.transports.split(",") : [] }));
+  return user;
+}
+
+function transaction(fn) {
+  db.exec("BEGIN");
+  try {
+    fn();
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+// ---------- sessions ----------
+
+// Sessions hold ceremony state between the begin and finish requests.
+// Production apps should use a real session store with expiry.
+const sessions = new Map();
+
+function getSession(req, res) {
+  const sid = /(?:^|;\s*)sid=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
+  if (sid && sessions.has(sid)) return sessions.get(sid);
+  const id = randomBytes(32).toString("base64url");
+  // logins holds pending sign-ins keyed by challenge: an autofill request
+  // and a button-triggered one can be in flight at the same time.
+  const session = { userId: null, registration: null, logins: new Map() };
+  sessions.set(id, session);
+  res.append("Set-Cookie", `sid=${id}; Path=/; HttpOnly; SameSite=Lax{{if .Secure}}; Secure{{end}}`);
+  return session;
+}
+
+function fail(res, status, message) {
+  res.status(status).json({ error: message });
+}
+
+const app = express();
+app.use(express.json());
+app.use(express.static(fileURLToPath(new URL("./public", import.meta.url))));
+
+// ---------- registration ----------
+
+app.post("/api/register/begin", async (req, res) => {
+  const session = getSession(req, res);
+
+  // Signed in: add a passkey to the account. Otherwise: a new account,
+  // which is only stored once the passkey is verified.
+  let user;
+  let isNew = false;
+  if (session.userId) {
+    user = loadUser("id", fromBase64url(session.userId));
+  } else {
+    const name = String(req.body.username ?? "").trim();
+    if (!name) return fail(res, 400, "username is required");
+    if (loadUser("name", name)) return fail(res, 409, "that username is taken");
+    const displayName = String(req.body.displayName ?? "").trim() || name;
+    // The user handle is random: it's stored on the authenticator and
+    // must not contain personal data.
+    user = { id: randomBytes(32), name, display_name: displayName, credentials: [] };
+    isNew = true;
+  }
+
+  const options = await generateRegistrationOptions({
+    rpName: RP_NAME,
+    rpID: RP_ID,
+    userName: user.name,
+    userID: user.id,
+    userDisplayName: user.display_name,
+    attestationType: {{if eq .Attestation "indirect"}}"none"{{else}}{{json .Attestation}}{{end}},
+    authenticatorSelection: {
+      residentKey: {{json .ResidentKey}},
+      requireResidentKey: {{eq .ResidentKey "required"}},
+      userVerification: USER_VERIFICATION,
+{{- if .Attachment}}
+      authenticatorAttachment: {{json .Attachment}},
+{{- end}}
+    },
+{{- if .ExcludeExisting}}
+    // Stop the user from registering the same authenticator twice.
+    excludeCredentials: user.credentials,
+{{- end}}
+{{- if or .CredProps .PRF}}
+    extensions: { {{- if .CredProps}} credProps: true,{{end}}{{if .PRF}} prf: {},{{end}} },
+{{- end}}
+  });
+{{- if eq .Attestation "indirect"}}
+  options.attestation = "indirect"; // not in the library's attestationType
+{{- end}}
+{{- if .Hints}}
+  options.hints = {{json .Hints}};
+{{- end}}
+
+  session.registration = { challenge: options.challenge, user, isNew };
+  res.json(options);
+});
+
+app.post("/api/register/finish", async (req, res) => {
+  const session = getSession(req, res);
+  const pending = session.registration;
+  session.registration = null; // a challenge is single-use
+  if (!pending) return fail(res, 400, "no registration in progress");
+
+  let verification;
+  try {
+    verification = await verifyRegistrationResponse({
+      response: req.body,
+      expectedChallenge: pending.challenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+      requireUserVerification: USER_VERIFICATION === "required",
+    });
+  } catch (e) {
+    return fail(res, 400, e.message);
+  }
+  if (!verification.verified) return fail(res, 400, "registration could not be verified");
+
+  const { credential, credentialDeviceType, credentialBackedUp, aaguid, fmt } = verification.registrationInfo;
+  const { user } = pending;
+  try {
+    transaction(() => {
+      if (pending.isNew) {
+        db.prepare("INSERT INTO users (id, name, display_name) VALUES (?, ?, ?)").run(user.id, user.name, user.display_name);
+      }
+      db.prepare(
+        `INSERT INTO credentials
+           (id, user_id, public_key, sign_count, transports, backup_eligible, backup_state, aaguid, attestation_fmt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        fromBase64url(credential.id),
+        user.id,
+        credential.publicKey,
+        credential.counter,
+        (credential.transports ?? []).join(","),
+        Number(credentialDeviceType === "multiDevice"),
+        Number(credentialBackedUp),
+        Buffer.from(aaguid.replaceAll("-", ""), "hex"),
+        fmt,
+      );
+    });
+  } catch (e) {
+    if (String(e.message).includes("UNIQUE")) return fail(res, 409, "that username is taken");
+    throw e;
+  }
+
+  session.userId = toBase64url(user.id);
+  res.json({ username: user.name });
+});
+
+// ---------- sign-in ----------
+
+app.post("/api/login/begin", async (req, res) => {
+  const session = getSession(req, res);
+
+  // With a known username, list that user's passkeys. Otherwise (no
+  // username, or an unknown one, so the response doesn't reveal which
+  // accounts exist), let the browser offer any passkey for this site.
+  const name = String(req.body.username ?? "").trim();
+  const user = name ? loadUser("name", name) : null;
+  const allow = user?.credentials.length ? user.credentials : undefined;
+
+  const options = await generateAuthenticationOptions({
+    rpID: RP_ID,
+    userVerification: USER_VERIFICATION,
+    allowCredentials: allow,
+  });
+{{- if .Hints}}
+  options.hints = {{json .Hints}};
+{{- end}}
+{{- if .PRF}}
+  // Added to the JSON directly: the library passes extensions through
+  // unconverted, and the browser expects base64url here.
+  options.extensions = { ...options.extensions, prf: { eval: { first: toBase64url(PRF_SALT) } } };
+{{- end}}
+
+  if (session.logins.size >= 8) session.logins.clear();
+  session.logins.set(options.challenge, { userId: allow ? toBase64url(user.id) : null });
+  res.json(options);
+});
+
+app.post("/api/login/finish", async (req, res) => {
+  const session = getSession(req, res);
+  const body = req.body;
+
+  let challenge;
+  try {
+    challenge = JSON.parse(fromBase64url(body.response.clientDataJSON).toString("utf8")).challenge;
+  } catch {
+    return fail(res, 400, "malformed response");
+  }
+  const pending = session.logins.get(challenge);
+  session.logins.delete(challenge); // a challenge is single-use
+  if (!pending) return fail(res, 400, "unknown or expired challenge");
+
+  // Find the account from the credential ID, and check that the user handle
+  // the authenticator returned belongs to the same account.
+  const row = db.prepare("SELECT * FROM credentials WHERE id = ?").get(fromBase64url(String(body.id ?? "")));
+  if (!row) return fail(res, 401, "unknown passkey");
+  const ownerId = toBase64url(row.user_id);
+  if ((pending.userId && pending.userId !== ownerId) || (body.response.userHandle && body.response.userHandle !== ownerId)) {
+    return fail(res, 401, "passkey does not belong to this user");
+  }
+
+  let verification;
+  try {
+    verification = await verifyAuthenticationResponse({
+      response: body,
+      expectedChallenge: challenge,
+      expectedOrigin: ORIGIN,
+      expectedRPID: RP_ID,
+      credential: {
+        id: toBase64url(row.id),
+        publicKey: row.public_key,
+        counter: row.sign_count,
+        transports: row.transports ? row.transports.split(",") : [],
+      },
+      requireUserVerification: USER_VERIFICATION === "required",
+    });
+  } catch (e) {
+    // This includes a sign count that went backwards, which can mean a
+    // cloned authenticator: the library rejects those sign-ins.
+    return fail(res, 401, e.message);
+  }
+  if (!verification.verified) return fail(res, 401, "sign-in could not be verified");
+
+  const { newCounter, credentialDeviceType, credentialBackedUp } = verification.authenticationInfo;
+  // Whether a passkey can be synced never changes; a different answer means
+  // something is wrong with the authenticator.
+  if (Number(credentialDeviceType === "multiDevice") !== row.backup_eligible) {
+    return fail(res, 401, "the passkey's backup eligibility changed");
+  }
+  db.prepare("UPDATE credentials SET sign_count = ?, backup_state = ?, last_used_at = datetime('now') WHERE id = ?").run(
+    newCounter,
+    Number(credentialBackedUp),
+    row.id,
+  );
+
+  session.userId = ownerId;
+  res.json({ username: loadUser("id", row.user_id).name });
+});
+
+// ---------- account ----------
+
+app.get("/api/me", (req, res) => {
+  const session = getSession(req, res);
+  const user = session.userId && loadUser("id", fromBase64url(session.userId));
+  if (!user) return fail(res, 401, "not signed in");
+  res.json({ username: user.name, passkeys: user.credentials.length });
+});
+
+app.post("/api/logout", (req, res) => {
+  getSession(req, res).userId = null;
+  res.json({ ok: true });
+});
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  fail(res, 500, "internal error");
+});
+
+app.listen(PORT, () => console.log(`listening on :${PORT}, open ${ORIGIN}`));
