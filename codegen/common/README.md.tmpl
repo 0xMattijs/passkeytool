@@ -32,6 +32,9 @@ Then open <{{.Origin}}>.
 | `src/main/java/com/example/passkeys/PasskeysApplication.java` | Spring Boot entry point and relying party settings |
 | `src/main/resources/application.properties` | Port, database, and session cookie settings |
 | `pom.xml` | Dependencies |
+{{- else if eq .Target.ID "csharp"}}
+| `Program.cs` | HTTP server, WebAuthn ceremonies, sessions, storage |
+| `Passkeys.csproj` | Dependencies |
 {{- end}}
 | `public/webauthn.js` | Browser side of the ceremonies, no dependencies |
 | `public/index.html` | Sign-in page |

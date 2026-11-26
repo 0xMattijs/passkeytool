@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net{{.Versions.dotnet}}</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Fido2" Version="{{.Versions.fido2}}" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="{{.Versions.msSqlite}}" />
+  </ItemGroup>
+
+</Project>

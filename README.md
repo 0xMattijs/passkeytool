@@ -36,7 +36,7 @@ security keys behave with different ceremony options.
   mediation). Each capability has a **(?)** button that explains what it
   means and which part of the page uses it.
 - A Developer tab that generates a complete, tested passkey app (Go,
-  Node.js, Python, or Java) for the options you choose. See
+  Node.js, Python, Java, or C#) for the options you choose. See
   [Developer tab and code generator](#developer-tab-and-code-generator).
 - A "Manage passkeys" card that detects your browser and OS and lists their
   built-in pages for managing passkeys and security keys, such as
@@ -148,6 +148,7 @@ generated code is licensed 0BSD.
 | Node.js | @simplewebauthn/server | Express 5, node:sqlite |
 | Python | py_webauthn | FastAPI, sqlite3 |
 | Java | Yubico java-webauthn-server | Spring Boot 4, SQLite JDBC |
+| C# | fido2-net-lib | ASP.NET Core minimal API, Microsoft.Data.Sqlite |
 
 The same generator is on the command line:
 

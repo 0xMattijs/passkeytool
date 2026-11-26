@@ -5,12 +5,18 @@
 // Usage: npm test [-- LANG...]
 
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 const repo = resolve(import.meta.dirname, "..");
+
+// The .NET SDK is often installed per user, outside PATH.
+const dotnetHome = join(homedir(), ".dotnet");
+if (existsSync(dotnetHome)) process.env.PATH = `${dotnetHome}:${process.env.PATH}`;
+process.env.DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+process.env.DOTNET_NOLOGO = "1";
 const work = mkdtempSync(join(tmpdir(), "passkeys-e2e-"));
 const tool = join(work, "passkeys-test");
 
@@ -41,6 +47,10 @@ const scenarios = [
 const targets = {
   go: { build: [["go", "mod", "tidy"], ["go", "build", "-o", "app", "."]], start: ["./app"] },
   node: { build: [["npm", "install", "--no-audit", "--no-fund", "--silent"]], start: ["node", "server.js"] },
+  csharp: {
+    build: [["dotnet", "build", "-nologo", "-v", "q", "-c", "Release", "-o", "out"]],
+    start: ["dotnet", "out/Passkeys.dll"],
+  },
   java: { build: [["mvn", "-q", "-B", "package", "-DskipTests"]], start: ["java", "-jar", "target/passkeys.jar"] },
   python: {
     build: [["python3", "-m", "venv", ".venv"], [".venv/bin/pip", "install", "-q", "-r", "requirements.txt"]],

@@ -1,0 +1,399 @@
+// Passkey sign-in server for {{.RPName}}, built with fido2-net-lib and
+// ASP.NET Core minimal APIs. It serves the page in public/ and stores data in
+// SQLite.
+
+using System.Buffers.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Fido2NetLib;
+using Fido2NetLib.Objects;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.FileProviders;
+
+const string RpId = {{json .RPID}};
+const string RpName = {{json .RPName}};
+const string Origin = {{json .Origin}};
+var userVerification = UserVerificationRequirement.{{pascal .UserVerification}};
+{{- if .Hints}}
+PublicKeyCredentialHint[] hints = [{{range $i, $h := .Hints}}{{if $i}}, {{end}}PublicKeyCredentialHint.{{pascal $h}}{{end}}];
+{{- end}}
+{{- if .PRF}}
+// Salt for deriving a secret from the passkey (PRF). It can be per user or
+// per purpose; the same passkey and salt always give the same secret.
+var prfSalt = System.Text.Encoding.UTF8.GetBytes({{json .PRFSalt}});
+{{- end}}
+var port = Environment.GetEnvironmentVariable("PORT") ?? {{json .Port}};
+
+var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+builder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+// Sessions hold ceremony state between the begin and finish requests. This
+// keeps them in memory; production apps should use a shared store.
+builder.Services.AddDistributedMemoryCache();
+builder.Services.AddSession(options =>
+{
+    options.Cookie.Name = "sid";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+    options.Cookie.SameSite = SameSiteMode.Lax;
+    options.Cookie.SecurePolicy = {{if .Secure}}CookieSecurePolicy.Always{{else}}CookieSecurePolicy.SameAsRequest{{end}};
+});
+builder.Services.AddSingleton(new Fido2(new Fido2Configuration
+{
+    RPID = RpId,
+    RPName = RpName,
+    Origins = new HashSet<string> { Origin },
+}));
+
+var app = builder.Build();
+app.UseSession();
+var publicFiles = new PhysicalFileProvider(Path.Combine(app.Environment.ContentRootPath, "public"));
+app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = publicFiles });
+app.UseStaticFiles(new StaticFileOptions { FileProvider = publicFiles });
+
+var db = new Database(Path.Combine(app.Environment.ContentRootPath, "passkeys.db"), Path.Combine(app.Environment.ContentRootPath, "schema.sql"));
+
+// ---------- registration ----------
+
+app.MapPost("/api/register/begin", async (HttpContext ctx, Fido2 fido2) =>
+{
+    var req = await ReadJson(ctx);
+    var session = ctx.Session;
+
+    // Signed in: add a passkey to the account. Otherwise: a new account,
+    // which is only stored once the passkey is verified.
+    User user;
+    var isNew = false;
+    if (session.GetString("userId") is string signedIn)
+    {
+        user = db.UserById(Base64Url.DecodeFromChars(signedIn))!;
+    }
+    else
+    {
+        var name = Str(req, "username");
+        if (name == "") return Error(400, "username is required");
+        if (db.UserByName(name) != null) return Error(409, "that username is taken");
+        var displayName = Str(req, "displayName");
+        // The user handle is random: it's stored on the authenticator and
+        // must not contain personal data.
+        user = new User(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32), name, displayName == "" ? name : displayName);
+        isNew = true;
+    }
+
+    var options = fido2.RequestNewCredential(new RequestNewCredentialParams
+    {
+        User = new Fido2User { Id = user.Id, Name = user.Name, DisplayName = user.DisplayName },
+        AuthenticatorSelection = new AuthenticatorSelection
+        {
+            ResidentKey = ResidentKeyRequirement.{{pascal .ResidentKey}},
+            UserVerification = userVerification,
+{{- if .Attachment}}
+            AuthenticatorAttachment = AuthenticatorAttachment.{{pascal .Attachment}},
+{{- end}}
+        },
+        AttestationPreference = AttestationConveyancePreference.{{pascal .Attestation}},
+{{- if .ExcludeExisting}}
+        // Stop the user from registering the same authenticator twice.
+        ExcludeCredentials = db.Descriptors(user.Id),
+{{- end}}
+{{- if or .CredProps .PRF}}
+        Extensions = new AuthenticationExtensionsClientInputs
+        {
+{{- if .CredProps}}
+            CredProps = true,
+{{- end}}
+{{- if .PRF}}
+            PRF = new AuthenticationExtensionsPRFInputs(),
+{{- end}}
+        },
+{{- end}}
+    });
+{{- if .Hints}}
+    options.Hints = hints;
+{{- end}}
+
+    session.SetString("registration", options.ToJson());
+    session.SetString("registrationIsNew", isNew ? "1" : "0");
+    var json = JsonNode.Parse(options.ToJson())!;
+{{- if .PRF}}
+    // The library writes "prf": {"eval": null}, which browsers reject.
+    json["extensions"]!["prf"] = new JsonObject();
+{{- end}}
+    return Results.Content(json.ToJsonString(), "application/json");
+});
+
+app.MapPost("/api/register/finish", async (HttpContext ctx, Fido2 fido2) =>
+{
+    var session = ctx.Session;
+    var optionsJson = session.GetString("registration");
+    var isNew = session.GetString("registrationIsNew") == "1";
+    session.Remove("registration"); // a challenge is single-use
+    if (optionsJson == null) return Error(400, "no registration in progress");
+
+    var response = await JsonSerializer.DeserializeAsync<AuthenticatorAttestationRawResponse>(ctx.Request.Body);
+    if (response == null) return Error(400, "malformed response");
+    RegisteredPublicKeyCredential credential;
+    try
+    {
+        credential = await fido2.MakeNewCredentialAsync(new MakeNewCredentialParams
+        {
+            AttestationResponse = response,
+            OriginalOptions = CredentialCreateOptions.FromJson(optionsJson),
+            IsCredentialIdUniqueToUserCallback = (p, _) => Task.FromResult(!db.CredentialExists(p.CredentialId)),
+        }, ctx.RequestAborted);
+    }
+    catch (Fido2VerificationException e)
+    {
+        return Error(400, e.Message);
+    }
+
+    var user = new User(credential.User.Id, credential.User.Name, credential.User.DisplayName);
+    try
+    {
+        db.AddCredential(isNew ? user : null, credential);
+    }
+    catch (SqliteException e) when (e.SqliteErrorCode == 19) // constraint violation
+    {
+        return Error(409, "that username is taken");
+    }
+
+    session.SetString("userId", Base64Url.EncodeToString(user.Id));
+    return Results.Json(new { username = user.Name });
+});
+
+// ---------- sign-in ----------
+
+app.MapPost("/api/login/begin", async (HttpContext ctx, Fido2 fido2) =>
+{
+    var req = await ReadJson(ctx);
+
+    // With a known username, list that user's passkeys. Otherwise (no
+    // username, or an unknown one, so the response doesn't reveal which
+    // accounts exist), let the browser offer any passkey for this site.
+    var name = Str(req, "username");
+    var user = name == "" ? null : db.UserByName(name);
+    List<PublicKeyCredentialDescriptor> allow = user == null ? [] : db.Descriptors(user.Id);
+
+    var options = fido2.GetAssertionOptions(new GetAssertionOptionsParams
+    {
+        AllowedCredentials = allow,
+        UserVerification = userVerification,
+{{- if .PRF}}
+        Extensions = new AuthenticationExtensionsClientInputs
+        {
+            PRF = new AuthenticationExtensionsPRFInputs { Eval = new AuthenticationExtensionsPRFValues { First = prfSalt } },
+        },
+{{- end}}
+    });
+{{- if .Hints}}
+    options.Hints = hints;
+{{- end}}
+
+    var logins = PendingLogins(ctx.Session);
+    if (logins.Count >= 8) logins.Clear();
+    logins[Base64Url.EncodeToString(options.Challenge)] =
+        new PendingLogin(options.ToJson(), allow.Count > 0 ? Base64Url.EncodeToString(user!.Id) : null);
+    SavePendingLogins(ctx.Session, logins);
+    return Results.Content(options.ToJson(), "application/json");
+});
+
+app.MapPost("/api/login/finish", async (HttpContext ctx, Fido2 fido2) =>
+{
+    var response = await JsonSerializer.DeserializeAsync<AuthenticatorAssertionRawResponse>(ctx.Request.Body);
+    if (response == null) return Error(400, "malformed response");
+    var challenge = JsonNode.Parse(response.Response.ClientDataJson)?["challenge"]?.GetValue<string>() ?? "";
+
+    var logins = PendingLogins(ctx.Session);
+    if (!logins.Remove(challenge, out var pending)) return Error(400, "unknown or expired challenge");
+    SavePendingLogins(ctx.Session, logins); // a challenge is single-use
+
+    // Find the account from the credential ID, and check that the user handle
+    // the authenticator returned belongs to the same account.
+    var stored = db.Credential(response.RawId);
+    if (stored == null) return Error(401, "unknown passkey");
+    if (pending.UserId != null && pending.UserId != Base64Url.EncodeToString(stored.UserId))
+    {
+        return Error(401, "passkey does not belong to this user");
+    }
+
+    VerifyAssertionResult result;
+    try
+    {
+        result = await fido2.MakeAssertionAsync(new MakeAssertionParams
+        {
+            AssertionResponse = response,
+            OriginalOptions = AssertionOptions.FromJson(pending.Options),
+            StoredPublicKey = stored.PublicKey,
+            StoredSignatureCounter = stored.SignCount,
+            IsUserHandleOwnerOfCredentialIdCallback = (p, _) =>
+                Task.FromResult(p.UserHandle.AsSpan().SequenceEqual(stored.UserId)),
+        }, ctx.RequestAborted);
+    }
+    catch (Fido2VerificationException e)
+    {
+        // This includes a sign count that went backwards, which can mean a
+        // cloned authenticator: the library rejects those sign-ins.
+        return Error(401, e.Message);
+    }
+
+    // Whether a passkey can be synced never changes; a different answer means
+    // something is wrong with the authenticator.
+    if (AuthenticatorData.Parse(response.Response.AuthenticatorData).IsBackupEligible != stored.BackupEligible)
+    {
+        return Error(401, "the passkey's backup eligibility changed");
+    }
+    db.UpdateAfterSignIn(stored.Id, result.SignCount, result.IsBackedUp);
+
+    ctx.Session.SetString("userId", Base64Url.EncodeToString(stored.UserId));
+    return Results.Json(new { username = db.UserById(stored.UserId)!.Name });
+});
+
+// ---------- account ----------
+
+app.MapGet("/api/me", (HttpContext ctx) =>
+{
+    var signedIn = ctx.Session.GetString("userId");
+    var user = signedIn == null ? null : db.UserById(Base64Url.DecodeFromChars(signedIn));
+    if (user == null) return Error(401, "not signed in");
+    return Results.Json(new { username = user.Name, passkeys = db.Descriptors(user.Id).Count });
+});
+
+app.MapPost("/api/logout", (HttpContext ctx) =>
+{
+    ctx.Session.Remove("userId");
+    return Results.Json(new { ok = true });
+});
+
+Console.WriteLine($"listening on :{port}, open {Origin}");
+app.Run();
+
+// ---------- helpers ----------
+
+static async Task<JsonObject> ReadJson(HttpContext ctx) =>
+    await JsonNode.ParseAsync(ctx.Request.Body) as JsonObject ?? new JsonObject();
+
+static string Str(JsonObject obj, string key) =>
+    obj[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s.Trim() : "";
+
+static IResult Error(int status, string message) => Results.Json(new { error = message }, statusCode: status);
+
+// Pending sign-ins keyed by challenge: an autofill request and a
+// button-triggered one can be in flight at the same time.
+static Dictionary<string, PendingLogin> PendingLogins(ISession session) =>
+    session.GetString("logins") is string json
+        ? JsonSerializer.Deserialize<Dictionary<string, PendingLogin>>(json)!
+        : new();
+
+static void SavePendingLogins(ISession session, Dictionary<string, PendingLogin> logins) =>
+    session.SetString("logins", JsonSerializer.Serialize(logins));
+
+record User(byte[] Id, string Name, string DisplayName);
+
+record StoredCredential(byte[] Id, byte[] UserId, byte[] PublicKey, uint SignCount, bool BackupEligible);
+
+record PendingLogin(string Options, string? UserId);
+
+// Database stores users and passkeys in SQLite.
+class Database
+{
+    private readonly string connectionString;
+
+    public Database(string path, string schemaPath)
+    {
+        connectionString = $"Data Source={path};Foreign Keys=True";
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = File.ReadAllText(schemaPath);
+        cmd.ExecuteNonQuery();
+    }
+
+    private SqliteConnection Open()
+    {
+        var conn = new SqliteConnection(connectionString);
+        conn.Open();
+        return conn;
+    }
+
+    private static SqliteCommand Command(SqliteConnection conn, string sql, params object?[] args)
+    {
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        for (var i = 0; i < args.Length; i++) cmd.Parameters.AddWithValue($"${i + 1}", args[i] ?? DBNull.Value);
+        return cmd;
+    }
+
+    public User? UserByName(string name) => QueryUser("SELECT id, name, display_name FROM users WHERE name = $1", name);
+
+    public User? UserById(byte[] id) => QueryUser("SELECT id, name, display_name FROM users WHERE id = $1", id);
+
+    private User? QueryUser(string sql, object arg)
+    {
+        using var conn = Open();
+        using var reader = Command(conn, sql, arg).ExecuteReader();
+        return reader.Read() ? new User((byte[])reader[0], reader.GetString(1), reader.GetString(2)) : null;
+    }
+
+    public List<PublicKeyCredentialDescriptor> Descriptors(byte[] userId)
+    {
+        using var conn = Open();
+        using var reader = Command(conn, "SELECT id, transports FROM credentials WHERE user_id = $1", userId).ExecuteReader();
+        var list = new List<PublicKeyCredentialDescriptor>();
+        while (reader.Read())
+        {
+            var transports = reader.GetString(1).Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => JsonSerializer.Deserialize<AuthenticatorTransport>($"\"{t}\""))
+                .ToArray();
+            list.Add(new PublicKeyCredentialDescriptor(PublicKeyCredentialType.PublicKey, (byte[])reader[0], transports));
+        }
+        return list;
+    }
+
+    public bool CredentialExists(byte[] id)
+    {
+        using var conn = Open();
+        return Command(conn, "SELECT 1 FROM credentials WHERE id = $1", id).ExecuteScalar() != null;
+    }
+
+    public StoredCredential? Credential(byte[] id)
+    {
+        using var conn = Open();
+        using var reader = Command(conn,
+            "SELECT id, user_id, public_key, sign_count, backup_eligible FROM credentials WHERE id = $1", id).ExecuteReader();
+        return reader.Read()
+            ? new StoredCredential((byte[])reader[0], (byte[])reader[1], (byte[])reader[2], (uint)reader.GetInt64(3), reader.GetInt64(4) == 1)
+            : null;
+    }
+
+    // AddCredential stores a passkey, and its user first when newUser is set.
+    public void AddCredential(User? newUser, RegisteredPublicKeyCredential c)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        if (newUser != null)
+        {
+            var insertUser = Command(conn, "INSERT INTO users (id, name, display_name) VALUES ($1, $2, $3)",
+                newUser.Id, newUser.Name, newUser.DisplayName);
+            insertUser.Transaction = tx;
+            insertUser.ExecuteNonQuery();
+        }
+        var transports = string.Join(",", (c.Transports ?? []).Select(t => JsonSerializer.Serialize(t).Trim('"')));
+        var insertCredential = Command(conn, """
+            INSERT INTO credentials
+              (id, user_id, public_key, sign_count, transports, backup_eligible, backup_state, aaguid, attestation_fmt)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
+            c.Id, c.User.Id, c.PublicKey, (long)c.SignCount, transports, c.IsBackupEligible ? 1 : 0,
+            c.IsBackedUp ? 1 : 0, c.AaGuid.ToByteArray(bigEndian: true), c.AttestationFormat);
+        insertCredential.Transaction = tx;
+        insertCredential.ExecuteNonQuery();
+        tx.Commit();
+    }
+
+    public void UpdateAfterSignIn(byte[] id, uint signCount, bool backedUp)
+    {
+        using var conn = Open();
+        Command(conn, "UPDATE credentials SET sign_count = $1, backup_state = $2, last_used_at = datetime('now') WHERE id = $3",
+            (long)signCount, backedUp ? 1 : 0, id).ExecuteNonQuery();
+    }
+}

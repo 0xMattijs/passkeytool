@@ -91,6 +91,9 @@ const (
 	springBootVersion   = "4.2.0"
 	sqliteJDBCVersion   = "3.54.1.0"
 	codegenJavaMin      = "17"
+	fido2NetVersion     = "4.3.3"
+	msSqliteVersion     = "10.0.15"
+	codegenDotnet       = "10.0"
 )
 
 var codegenTargets = []codegenTarget{
@@ -146,6 +149,18 @@ var codegenTargets = []codegenTarget{
 		unsupported: func(s codegenSpec) []string {
 			if s.Attestation != "none" {
 				return []string{"The Yubico library sets the attestation preference on the RelyingParty, so it applies to every registration."}
+			}
+			return nil
+		},
+	},
+	{
+		ID: "csharp", Name: "C#", Library: "fido2-net-lib",
+		LibraryURL: "https://github.com/passwordless-lib/fido2-net-lib", Version: fido2NetVersion,
+		Framework: "ASP.NET Core minimal API, Microsoft.Data.Sqlite (.NET " + codegenDotnet + " or later)",
+		Run:       []string{"dotnet run"},
+		unsupported: func(s codegenSpec) []string {
+			if s.PRF {
+				return []string{`fido2-net-lib serializes an empty PRF input as {"eval": null}, which browsers reject; the generated code sends {} instead.`}
 			}
 			return nil
 		},
@@ -304,6 +319,16 @@ var codegenFuncs = template.FuncMap{
 	"has": func(list []string, v string) bool { return slices.Contains(list, v) },
 	// enum turns an option value into a Java enum constant: cross-platform -> CROSS_PLATFORM.
 	"enum": func(v string) string { return strings.ToUpper(strings.ReplaceAll(v, "-", "_")) },
+	// pascal turns an option value into a C# enum member: cross-platform -> CrossPlatform.
+	"pascal": func(v string) string {
+		var b strings.Builder
+		for _, part := range strings.Split(v, "-") {
+			if part != "" {
+				b.WriteString(strings.ToUpper(part[:1]) + part[1:])
+			}
+		}
+		return b.String()
+	},
 	"goHints": func(hints []string) string {
 		var parts []string
 		for _, h := range hints {
@@ -329,6 +354,7 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 			"goWebAuthn": goWebAuthnVersion, "goSQLite": goSQLiteVersion, "go": codegenGoMinVersion,
 			"simpleWebAuthn": simpleWebAuthnVer, "express": expressVersion, "node": codegenNodeMinimum,
 			"pyWebAuthn": pyWebAuthnVersion, "fastapi": fastapiVersion, "uvicorn": uvicornVersion,
+			"fido2": fido2NetVersion, "msSqlite": msSqliteVersion, "dotnet": codegenDotnet,
 			"yubico": yubicoVersion, "springBoot": springBootVersion, "sqliteJdbc": sqliteJDBCVersion, "java": codegenJavaMin,
 		},
 		PRFSalt:      "passkey-encryption-key-v1",
@@ -375,7 +401,7 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 	// Server code first, then the client, then supporting files.
 	order := func(f codegenFile) int {
 		switch {
-		case f.Path == "main.go" || f.Path == "server.js" || f.Path == "server.py" || strings.HasSuffix(f.Path, "Controller.java"):
+		case f.Path == "main.go" || f.Path == "server.js" || f.Path == "server.py" || strings.HasSuffix(f.Path, "Controller.java") || f.Path == "Program.cs":
 			return 0
 		case strings.HasSuffix(f.Path, ".java"):
 			return 1
@@ -404,6 +430,10 @@ func fileLanguage(p string) string {
 		return "python"
 	case ".java":
 		return "java"
+	case ".cs":
+		return "csharp"
+	case ".csproj":
+		return "xml"
 	case ".xml":
 		return "xml"
 	case ".properties":
