@@ -1,0 +1,292 @@
+package com.example.passkeys;
+
+import com.example.passkeys.SqliteCredentialRepository.User;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yubico.webauthn.AssertionRequest;
+import com.yubico.webauthn.AssertionResult;
+import com.yubico.webauthn.FinishAssertionOptions;
+import com.yubico.webauthn.FinishRegistrationOptions;
+import com.yubico.webauthn.RegistrationResult;
+import com.yubico.webauthn.RelyingParty;
+import com.yubico.webauthn.StartAssertionOptions;
+import com.yubico.webauthn.StartRegistrationOptions;
+{{- if .PRF}}
+import com.yubico.webauthn.data.AssertionExtensionInputs;
+{{- end}}
+{{- if .Attachment}}
+import com.yubico.webauthn.data.AuthenticatorAttachment;
+{{- end}}
+import com.yubico.webauthn.data.AuthenticatorSelectionCriteria;
+import com.yubico.webauthn.data.AuthenticatorTransport;
+import com.yubico.webauthn.data.ByteArray;
+{{- if .PRF}}
+import com.yubico.webauthn.data.Extensions;
+{{- end}}
+import com.yubico.webauthn.data.PublicKeyCredential;
+import com.yubico.webauthn.data.PublicKeyCredentialCreationOptions;
+{{- if or .CredProps .PRF}}
+import com.yubico.webauthn.data.RegistrationExtensionInputs;
+{{- end}}
+import com.yubico.webauthn.data.ResidentKeyRequirement;
+import com.yubico.webauthn.data.UserIdentity;
+import com.yubico.webauthn.data.UserVerificationRequirement;
+import com.yubico.webauthn.exception.AssertionFailedException;
+import com.yubico.webauthn.exception.RegistrationFailedException;
+import jakarta.servlet.http.HttpSession;
+import java.io.IOException;
+import java.security.SecureRandom;
+import java.util.LinkedHashMap;
+{{- if .Hints}}
+import java.util.List;
+{{- end}}
+import java.util.Map;
+{{- if not .ExcludeExisting}}
+import java.util.Optional;
+{{- end}}
+import java.util.stream.Collectors;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+
+/**
+ * The passkey ceremonies. Each one is two requests: begin returns options with
+ * a fresh challenge, and finish verifies what the authenticator returned. The
+ * HTTP session carries the pending state in between.
+ */
+@RestController
+public class PasskeyController {
+
+  private static final UserVerificationRequirement USER_VERIFICATION =
+      UserVerificationRequirement.{{enum .UserVerification}};
+{{- if .Hints}}
+  private static final List<String> HINTS = List.of({{range $i, $h := .Hints}}{{if $i}}, {{end}}{{json $h}}{{end}});
+{{- end}}
+{{- if .PRF}}
+  // Salt for deriving a secret from the passkey (PRF). It can be per user or
+  // per purpose; the same passkey and salt always give the same secret.
+  private static final ByteArray PRF_SALT = new ByteArray({{json .PRFSalt}}.getBytes());
+{{- end}}
+
+  // The Yubico library uses Jackson 2; parse request bodies with it too.
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final SecureRandom RANDOM = new SecureRandom();
+
+  record PendingRegistration(String optionsJson, User user, boolean isNew) {}
+
+  private final RelyingParty rp;
+  private final SqliteCredentialRepository repo;
+  private final TransactionTemplate tx;
+
+  PasskeyController(RelyingParty rp, SqliteCredentialRepository repo, TransactionTemplate tx) {
+    this.rp = rp;
+    this.repo = repo;
+    this.tx = tx;
+  }
+
+  // ---------- registration ----------
+
+  @PostMapping("/api/register/begin")
+  ResponseEntity<String> registerBegin(@RequestBody String body, HttpSession session) throws IOException {
+    JsonNode req = JSON.readTree(body);
+
+    // Signed in: add a passkey to the account. Otherwise: a new account,
+    // which is only stored once the passkey is verified.
+    User user;
+    boolean isNew;
+    ByteArray signedIn = (ByteArray) session.getAttribute("userId");
+    if (signedIn != null) {
+      user = repo.userById(signedIn).orElseThrow();
+      isNew = false;
+    } else {
+      String name = req.path("username").asText("").trim();
+      if (name.isEmpty()) return error(400, "username is required");
+      if (repo.userByName(name).isPresent()) return error(409, "that username is taken");
+      String displayName = req.path("displayName").asText("").trim();
+      // The user handle is random: it's stored on the authenticator and
+      // must not contain personal data.
+      byte[] id = new byte[32];
+      RANDOM.nextBytes(id);
+      user = new User(new ByteArray(id), name, displayName.isEmpty() ? name : displayName);
+      isNew = true;
+    }
+
+    // The library fills excludeCredentials from the repository, which stops
+    // the user from registering the same authenticator twice.
+    PublicKeyCredentialCreationOptions options = rp.startRegistration(StartRegistrationOptions.builder()
+        .user(UserIdentity.builder().name(user.name()).displayName(user.displayName()).id(user.id()).build())
+        .authenticatorSelection(AuthenticatorSelectionCriteria.builder()
+            .residentKey(ResidentKeyRequirement.{{enum .ResidentKey}})
+            .userVerification(USER_VERIFICATION)
+{{- if .Attachment}}
+            .authenticatorAttachment(AuthenticatorAttachment.{{enum .Attachment}})
+{{- end}}
+            .build())
+{{- if .Hints}}
+        .hints(HINTS)
+{{- end}}
+{{- if or .CredProps .PRF}}
+        .extensions(RegistrationExtensionInputs.builder()
+{{- if .CredProps}}
+            .credProps()
+{{- end}}
+{{- if .PRF}}
+            .prf(Extensions.Prf.PrfRegistrationInput.enable())
+{{- end}}
+            .build())
+{{- end}}
+        .build());
+{{- if not .ExcludeExisting}}
+    options = options.toBuilder().excludeCredentials(Optional.empty()).build();
+{{- end}}
+
+    session.setAttribute("registration", new PendingRegistration(options.toJson(), user, isNew));
+    return ok(unwrap(options.toCredentialsCreateJson()));
+  }
+
+  @PostMapping("/api/register/finish")
+  ResponseEntity<String> registerFinish(@RequestBody String body, HttpSession session) throws IOException {
+    PendingRegistration pending = (PendingRegistration) session.getAttribute("registration");
+    session.removeAttribute("registration"); // a challenge is single-use
+    if (pending == null) return error(400, "no registration in progress");
+
+    var credential = PublicKeyCredential.parseRegistrationResponseJson(body);
+    RegistrationResult result;
+    try {
+      result = rp.finishRegistration(FinishRegistrationOptions.builder()
+          .request(PublicKeyCredentialCreationOptions.fromJson(pending.optionsJson()))
+          .response(credential)
+          .build());
+    } catch (RegistrationFailedException e) {
+      return error(400, e.getMessage());
+    }
+
+    User user = pending.user();
+    String transports = credential.getResponse().getTransports().stream()
+        .map(AuthenticatorTransport::getId).collect(Collectors.joining(","));
+    try {
+      tx.executeWithoutResult(status -> {
+        if (pending.isNew()) repo.addUser(user);
+        repo.addCredential(user.id(), result.getKeyId().getId(), result.getPublicKeyCose(),
+            result.getSignatureCount(), transports, result.isBackupEligible(), result.isBackedUp(),
+            result.getAaguid(), credential.getResponse().getAttestation().getFormat());
+      });
+    } catch (DuplicateKeyException e) {
+      return error(409, "that username is taken");
+    }
+
+    session.setAttribute("userId", user.id());
+    return ok(Map.of("username", user.name()));
+  }
+
+  // ---------- sign-in ----------
+
+  @PostMapping("/api/login/begin")
+  ResponseEntity<String> loginBegin(@RequestBody String body, HttpSession session) throws IOException {
+    JsonNode req = JSON.readTree(body);
+
+    // With a known username, list that user's passkeys. Otherwise (no
+    // username, or an unknown one, so the response doesn't reveal which
+    // accounts exist), let the browser offer any passkey for this site.
+    String name = req.path("username").asText("").trim();
+    var options = StartAssertionOptions.builder().userVerification(USER_VERIFICATION);
+    if (!name.isEmpty() && !repo.getCredentialIdsForUsername(name).isEmpty()) {
+      options.username(name);
+    }
+{{- if .Hints}}
+    options.hints(HINTS);
+{{- end}}
+{{- if .PRF}}
+    options.extensions(AssertionExtensionInputs.builder()
+        .prf(Extensions.Prf.PrfAuthenticationInput.eval(Extensions.Prf.PrfValues.one(PRF_SALT)))
+        .build());
+{{- end}}
+    AssertionRequest request = rp.startAssertion(options.build());
+
+    Map<String, String> logins = pendingLogins(session);
+    if (logins.size() >= 8) logins.clear();
+    logins.put(request.getPublicKeyCredentialRequestOptions().getChallenge().getBase64Url(), request.toJson());
+    return ok(unwrap(request.toCredentialsGetJson()));
+  }
+
+  @PostMapping("/api/login/finish")
+  ResponseEntity<String> loginFinish(@RequestBody String body, HttpSession session) throws IOException {
+    var credential = PublicKeyCredential.parseAssertionResponseJson(body);
+    String challenge = credential.getResponse().getClientData().getChallenge().getBase64Url();
+    String requestJson = pendingLogins(session).remove(challenge); // a challenge is single-use
+    if (requestJson == null) return error(400, "unknown or expired challenge");
+
+    // The library finds the account through the repository, checks that the
+    // passkey belongs to it, and rejects a sign count that went backwards
+    // (a possible cloned authenticator) or a changed backup eligibility.
+    AssertionResult result;
+    try {
+      result = rp.finishAssertion(FinishAssertionOptions.builder()
+          .request(AssertionRequest.fromJson(requestJson))
+          .response(credential)
+          .build());
+    } catch (AssertionFailedException e) {
+      return error(401, e.getMessage());
+    }
+    if (!result.isSuccess()) return error(401, "sign-in could not be verified");
+
+    repo.updateAfterSignIn(result.getCredential().getCredentialId(), result.getSignatureCount(), result.isBackedUp());
+    session.setAttribute("userId", result.getCredential().getUserHandle());
+    return ok(Map.of("username", result.getUsername()));
+  }
+
+  // ---------- account ----------
+
+  @GetMapping("/api/me")
+  ResponseEntity<String> me(HttpSession session) throws IOException {
+    ByteArray signedIn = (ByteArray) session.getAttribute("userId");
+    var user = signedIn == null ? null : repo.userById(signedIn).orElse(null);
+    if (user == null) return error(401, "not signed in");
+    return ok(Map.of("username", user.name(), "passkeys", repo.countCredentials(user.id())));
+  }
+
+  @PostMapping("/api/logout")
+  ResponseEntity<String> logout(HttpSession session) throws IOException {
+    session.removeAttribute("userId");
+    return ok(Map.of("ok", true));
+  }
+
+  // ---------- helpers ----------
+
+  /** Pending sign-ins keyed by challenge: autofill and a button can both be in flight. */
+  @SuppressWarnings("unchecked")
+  private static Map<String, String> pendingLogins(HttpSession session) {
+    var logins = (Map<String, String>) session.getAttribute("logins");
+    if (logins == null) {
+      logins = new LinkedHashMap<>();
+      session.setAttribute("logins", logins);
+    }
+    return logins;
+  }
+
+  /** The library wraps options as {"publicKey": ...}; the client expects the inner object. */
+  private static String unwrap(String credentialsJson) throws IOException {
+    return JSON.readTree(credentialsJson).get("publicKey").toString();
+  }
+
+  private static ResponseEntity<String> ok(Object value) throws IOException {
+    String json = value instanceof String s ? s : JSON.writeValueAsString(value);
+    return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(json);
+  }
+
+  private static ResponseEntity<String> error(int status, String message) throws IOException {
+    return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON)
+        .body(JSON.writeValueAsString(Map.of("error", String.valueOf(message))));
+  }
+
+  @ExceptionHandler(IOException.class)
+  ResponseEntity<String> badRequest(IOException e) throws IOException {
+    return error(400, "malformed request: " + e.getMessage());
+  }
+}

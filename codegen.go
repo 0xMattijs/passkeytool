@@ -83,6 +83,14 @@ const (
 	expressVersion      = "5.3.0"
 	codegenNodeMinimum  = "22.13"
 	codegenGoMinVersion = "1.25"
+	pyWebAuthnVersion   = "3.0.1"
+	fastapiVersion      = "0.165.0"
+	uvicornVersion      = "0.54.0"
+	codegenPythonMin    = "3.11"
+	yubicoVersion       = "2.10.1"
+	springBootVersion   = "4.2.0"
+	sqliteJDBCVersion   = "3.54.1.0"
+	codegenJavaMin      = "17"
 )
 
 var codegenTargets = []codegenTarget{
@@ -112,6 +120,34 @@ var codegenTargets = []codegenTarget{
 				out = append(out, "The PRF salt is added to the sign-in options JSON directly, because the library passes extensions through unconverted.")
 			}
 			return out
+		},
+	},
+	{
+		ID: "python", Name: "Python", Library: "py_webauthn",
+		LibraryURL: "https://github.com/duo-labs/py_webauthn", Version: pyWebAuthnVersion,
+		Framework: "FastAPI, sqlite3 (Python " + codegenPythonMin + " or later)",
+		Run:       []string{"python3 -m venv .venv", ".venv/bin/pip install -r requirements.txt", ".venv/bin/python server.py"},
+		unsupported: func(s codegenSpec) []string {
+			var out []string
+			if s.CredProps || s.PRF {
+				out = append(out, "py_webauthn has no extensions parameter; the generated code adds credProps and prf to the options JSON directly.")
+			}
+			if len(s.Hints) > 0 {
+				out = append(out, "py_webauthn takes hints at registration only; the generated code adds them to the sign-in options JSON directly.")
+			}
+			return out
+		},
+	},
+	{
+		ID: "java", Name: "Java", Library: "Yubico java-webauthn-server",
+		LibraryURL: "https://github.com/Yubico/java-webauthn-server", Version: yubicoVersion,
+		Framework: "Spring Boot " + springBootVersion + ", SQLite JDBC (Java " + codegenJavaMin + " or later, Maven)",
+		Run:       []string{"mvn -q package -DskipTests", "java -jar target/passkeys.jar"},
+		unsupported: func(s codegenSpec) []string {
+			if s.Attestation != "none" {
+				return []string{"The Yubico library sets the attestation preference on the RelyingParty, so it applies to every registration."}
+			}
+			return nil
 		},
 	},
 }
@@ -266,6 +302,8 @@ var codegenFuncs = template.FuncMap{
 		return string(b), err
 	},
 	"has": func(list []string, v string) bool { return slices.Contains(list, v) },
+	// enum turns an option value into a Java enum constant: cross-platform -> CROSS_PLATFORM.
+	"enum": func(v string) string { return strings.ToUpper(strings.ReplaceAll(v, "-", "_")) },
 	"goHints": func(hints []string) string {
 		var parts []string
 		for _, h := range hints {
@@ -290,6 +328,8 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 		Versions: map[string]string{
 			"goWebAuthn": goWebAuthnVersion, "goSQLite": goSQLiteVersion, "go": codegenGoMinVersion,
 			"simpleWebAuthn": simpleWebAuthnVer, "express": expressVersion, "node": codegenNodeMinimum,
+			"pyWebAuthn": pyWebAuthnVersion, "fastapi": fastapiVersion, "uvicorn": uvicornVersion,
+			"yubico": yubicoVersion, "springBoot": springBootVersion, "sqliteJdbc": sqliteJDBCVersion, "java": codegenJavaMin,
 		},
 		PRFSalt:      "passkey-encryption-key-v1",
 		Discoverable: spec.ResidentKey != "discouraged",
@@ -335,18 +375,20 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 	// Server code first, then the client, then supporting files.
 	order := func(f codegenFile) int {
 		switch {
-		case f.Path == "main.go" || f.Path == "server.js":
+		case f.Path == "main.go" || f.Path == "server.js" || f.Path == "server.py" || strings.HasSuffix(f.Path, "Controller.java"):
 			return 0
-		case strings.HasPrefix(f.Path, "public/"):
+		case strings.HasSuffix(f.Path, ".java"):
 			return 1
-		case f.Path == "schema.sql":
+		case strings.HasPrefix(f.Path, "public/"):
 			return 2
+		case f.Path == "schema.sql":
+			return 3
 		case f.Path == "README.md":
-			return 4
-		case f.Path == "LICENSE":
 			return 5
+		case f.Path == "LICENSE":
+			return 6
 		}
-		return 3
+		return 4
 	}
 	slices.SortStableFunc(res.Files, func(a, b codegenFile) int { return order(a) - order(b) })
 	return res, nil
@@ -358,6 +400,14 @@ func fileLanguage(p string) string {
 		return "go"
 	case ".js", ".mjs":
 		return "javascript"
+	case ".py":
+		return "python"
+	case ".java":
+		return "java"
+	case ".xml":
+		return "xml"
+	case ".properties":
+		return "properties"
 	case ".html":
 		return "html"
 	case ".sql":

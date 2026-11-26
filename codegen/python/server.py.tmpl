@@ -1,0 +1,346 @@
+"""Passkey sign-in server for {{.RPName}}, built with py_webauthn and FastAPI.
+
+It serves the page in public/ and stores data in SQLite.
+"""
+
+import base64
+import json
+import os
+import secrets
+import sqlite3
+from pathlib import Path
+
+import uvicorn
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from webauthn import (
+    generate_authentication_options,
+    generate_registration_options,
+    options_to_json,
+    verify_authentication_response,
+    verify_registration_response,
+)
+from webauthn.helpers.structs import (
+{{- if .Attachment}}
+    AuthenticatorAttachment,
+{{- end}}
+    AttestationConveyancePreference,
+    AuthenticatorSelectionCriteria,
+    AuthenticatorTransport,
+    CredentialDeviceType,
+{{- if .Hints}}
+    PublicKeyCredentialHint,
+{{- end}}
+    PublicKeyCredentialDescriptor,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
+
+RP_ID = {{json .RPID}}
+RP_NAME = {{json .RPName}}
+ORIGIN = {{json .Origin}}
+USER_VERIFICATION = UserVerificationRequirement({{json .UserVerification}})
+PORT = int(os.environ.get("PORT", {{json .Port}}))
+{{- if .Hints}}
+HINTS = {{json .Hints}}
+{{- end}}
+{{- if .PRF}}
+# Salt for deriving a secret from the passkey (PRF). It can be per user or
+# per purpose; the same passkey and salt always give the same secret.
+PRF_SALT = {{json .PRFSalt}}.encode()
+{{- end}}
+
+HERE = Path(__file__).parent
+db = sqlite3.connect(HERE / "passkeys.db", check_same_thread=False, isolation_level=None)
+db.row_factory = sqlite3.Row
+db.execute("PRAGMA foreign_keys = ON")
+db.executescript((HERE / "schema.sql").read_text())
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def from_b64url(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+# ---------- users and credentials ----------
+
+
+def load_user(column: str, value):
+    user = db.execute(f"SELECT id, name, display_name FROM users WHERE {column} = ?", (value,)).fetchone()
+    if user is None:
+        return None
+    creds = db.execute("SELECT id, transports FROM credentials WHERE user_id = ?", (user["id"],)).fetchall()
+    return {
+        "id": user["id"],
+        "name": user["name"],
+        "display_name": user["display_name"],
+        "credentials": [
+            PublicKeyCredentialDescriptor(
+                id=c["id"],
+                transports=[AuthenticatorTransport(t) for t in c["transports"].split(",") if t],
+            )
+            for c in creds
+        ],
+    }
+
+
+# ---------- sessions ----------
+
+# Sessions hold ceremony state between the begin and finish requests.
+# Production apps should use a real session store with expiry.
+sessions: dict[str, dict] = {}
+
+
+def get_session(request: Request, response: Response) -> dict:
+    sid = request.cookies.get("sid")
+    if sid in sessions:
+        return sessions[sid]
+    sid = secrets.token_urlsafe(32)
+    # logins holds pending sign-ins keyed by challenge: an autofill request
+    # and a button-triggered one can be in flight at the same time.
+    sessions[sid] = {"user_id": None, "registration": None, "logins": {}}
+    response.set_cookie("sid", sid, httponly=True, samesite="lax", secure={{if .Secure}}True{{else}}False{{end}})
+    return sessions[sid]
+
+
+def fail(response: Response, status: int, message: str) -> JSONResponse:
+    # Keep any session cookie set on the injected response.
+    err = JSONResponse({"error": message}, status_code=status)
+    for value in response.headers.getlist("set-cookie"):
+        err.headers.append("set-cookie", value)
+    return err
+
+
+app = FastAPI()
+
+# ---------- registration ----------
+
+
+@app.post("/api/register/begin")
+async def register_begin(request: Request, response: Response):
+    session = get_session(request, response)
+    body = await request.json()
+
+    # Signed in: add a passkey to the account. Otherwise: a new account,
+    # which is only stored once the passkey is verified.
+    if session["user_id"]:
+        user = load_user("id", session["user_id"])
+        is_new = False
+    else:
+        name = str(body.get("username") or "").strip()
+        if not name:
+            return fail(response, 400, "username is required")
+        if load_user("name", name):
+            return fail(response, 409, "that username is taken")
+        # The user handle is random: it's stored on the authenticator and
+        # must not contain personal data.
+        user = {
+            "id": secrets.token_bytes(32),
+            "name": name,
+            "display_name": str(body.get("displayName") or "").strip() or name,
+            "credentials": [],
+        }
+        is_new = True
+
+    options = generate_registration_options(
+        rp_id=RP_ID,
+        rp_name=RP_NAME,
+        user_id=user["id"],
+        user_name=user["name"],
+        user_display_name=user["display_name"],
+        attestation=AttestationConveyancePreference({{json .Attestation}}),
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement({{json .ResidentKey}}),
+            require_resident_key={{if eq .ResidentKey "required"}}True{{else}}False{{end}},
+            user_verification=USER_VERIFICATION,
+{{- if .Attachment}}
+            authenticator_attachment=AuthenticatorAttachment({{json .Attachment}}),
+{{- end}}
+        ),
+{{- if .ExcludeExisting}}
+        # Stop the user from registering the same authenticator twice.
+        exclude_credentials=user["credentials"],
+{{- end}}
+{{- if .Hints}}
+        hints=[PublicKeyCredentialHint(h) for h in HINTS],
+{{- end}}
+    )
+    options_json = json.loads(options_to_json(options))
+{{- if or .CredProps .PRF}}
+    # py_webauthn has no extensions parameter; add them to the JSON.
+    options_json["extensions"] = { {{- if .CredProps}}"credProps": True{{end}}{{if and .CredProps .PRF}}, {{end}}{{if .PRF}}"prf": {}{{end -}} }
+{{- end}}
+
+    session["registration"] = {"challenge": options.challenge, "user": user, "is_new": is_new}
+    return options_json
+
+
+@app.post("/api/register/finish")
+async def register_finish(request: Request, response: Response):
+    session = get_session(request, response)
+    pending, session["registration"] = session["registration"], None  # a challenge is single-use
+    if pending is None:
+        return fail(response, 400, "no registration in progress")
+    body = await request.json()
+
+    try:
+        verification = verify_registration_response(
+            credential=body,
+            expected_challenge=pending["challenge"],
+            expected_origin=ORIGIN,
+            expected_rp_id=RP_ID,
+            require_user_verification=USER_VERIFICATION == UserVerificationRequirement.REQUIRED,
+        )
+    except Exception as e:
+        return fail(response, 400, str(e))
+
+    user = pending["user"]
+    transports = ",".join(body.get("response", {}).get("transports") or [])
+    try:
+        with db:
+            db.execute("BEGIN")
+            if pending["is_new"]:
+                db.execute(
+                    "INSERT INTO users (id, name, display_name) VALUES (?, ?, ?)",
+                    (user["id"], user["name"], user["display_name"]),
+                )
+            db.execute(
+                """INSERT INTO credentials
+                     (id, user_id, public_key, sign_count, transports, backup_eligible, backup_state, aaguid, attestation_fmt)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    verification.credential_id,
+                    user["id"],
+                    verification.credential_public_key,
+                    verification.sign_count,
+                    transports,
+                    int(verification.credential_device_type == CredentialDeviceType.MULTI_DEVICE),
+                    int(verification.credential_backed_up),
+                    bytes.fromhex(verification.aaguid.replace("-", "")),
+                    verification.fmt,
+                ),
+            )
+    except sqlite3.IntegrityError:
+        return fail(response, 409, "that username is taken")
+
+    session["user_id"] = user["id"]
+    return {"username": user["name"]}
+
+
+# ---------- sign-in ----------
+
+
+@app.post("/api/login/begin")
+async def login_begin(request: Request, response: Response):
+    session = get_session(request, response)
+    body = await request.json()
+
+    # With a known username, list that user's passkeys. Otherwise (no
+    # username, or an unknown one, so the response doesn't reveal which
+    # accounts exist), let the browser offer any passkey for this site.
+    name = str(body.get("username") or "").strip()
+    user = load_user("name", name) if name else None
+    allow = user["credentials"] if user and user["credentials"] else None
+
+    options = generate_authentication_options(
+        rp_id=RP_ID,
+        user_verification=USER_VERIFICATION,
+        allow_credentials=allow,
+    )
+    options_json = json.loads(options_to_json(options))
+{{- if .Hints}}
+    options_json["hints"] = HINTS  # not a parameter of generate_authentication_options
+{{- end}}
+{{- if .PRF}}
+    options_json["extensions"] = {"prf": {"eval": {"first": b64url(PRF_SALT)}}}
+{{- end}}
+
+    if len(session["logins"]) >= 8:
+        session["logins"].clear()
+    session["logins"][options_json["challenge"]] = {
+        "challenge": options.challenge,
+        "user_id": user["id"] if allow else None,
+    }
+    return options_json
+
+
+@app.post("/api/login/finish")
+async def login_finish(request: Request, response: Response):
+    session = get_session(request, response)
+    body = await request.json()
+
+    try:
+        client_data = json.loads(from_b64url(body["response"]["clientDataJSON"]))
+        challenge = client_data["challenge"]
+    except Exception:
+        return fail(response, 400, "malformed response")
+    pending = session["logins"].pop(challenge, None)  # a challenge is single-use
+    if pending is None:
+        return fail(response, 400, "unknown or expired challenge")
+
+    # Find the account from the credential ID, and check that the user handle
+    # the authenticator returned belongs to the same account.
+    row = db.execute("SELECT * FROM credentials WHERE id = ?", (from_b64url(str(body.get("id", ""))),)).fetchone()
+    if row is None:
+        return fail(response, 401, "unknown passkey")
+    user_handle = body["response"].get("userHandle")
+    if (pending["user_id"] and pending["user_id"] != row["user_id"]) or (
+        user_handle and from_b64url(user_handle) != row["user_id"]
+    ):
+        return fail(response, 401, "passkey does not belong to this user")
+
+    try:
+        verification = verify_authentication_response(
+            credential=body,
+            expected_challenge=pending["challenge"],
+            expected_origin=ORIGIN,
+            expected_rp_id=RP_ID,
+            credential_public_key=row["public_key"],
+            credential_current_sign_count=row["sign_count"],
+            require_user_verification=USER_VERIFICATION == UserVerificationRequirement.REQUIRED,
+        )
+    except Exception as e:
+        # This includes a sign count that went backwards, which can mean a
+        # cloned authenticator: the library rejects those sign-ins.
+        return fail(response, 401, str(e))
+
+    # Whether a passkey can be synced never changes; a different answer means
+    # something is wrong with the authenticator.
+    if int(verification.credential_device_type == CredentialDeviceType.MULTI_DEVICE) != row["backup_eligible"]:
+        return fail(response, 401, "the passkey's backup eligibility changed")
+    db.execute(
+        "UPDATE credentials SET sign_count = ?, backup_state = ?, last_used_at = datetime('now') WHERE id = ?",
+        (verification.new_sign_count, int(verification.credential_backed_up), row["id"]),
+    )
+
+    session["user_id"] = row["user_id"]
+    return {"username": load_user("id", row["user_id"])["name"]}
+
+
+# ---------- account ----------
+
+
+@app.get("/api/me")
+async def me(request: Request, response: Response):
+    session = get_session(request, response)
+    user = load_user("id", session["user_id"]) if session["user_id"] else None
+    if user is None:
+        return fail(response, 401, "not signed in")
+    return {"username": user["name"], "passkeys": len(user["credentials"])}
+
+
+@app.post("/api/logout")
+async def logout(request: Request, response: Response):
+    get_session(request, response)["user_id"] = None
+    return {"ok": True}
+
+
+app.mount("/", StaticFiles(directory=HERE / "public", html=True), name="public")
+
+if __name__ == "__main__":
+    print(f"listening on :{PORT}, open {ORIGIN}")
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")

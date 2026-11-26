@@ -23,6 +23,15 @@ Then open <{{.Origin}}>.
 {{- else if eq .Target.ID "node"}}
 | `server.js` | HTTP server, WebAuthn ceremonies, sessions, storage |
 | `package.json` | Dependencies |
+{{- else if eq .Target.ID "python"}}
+| `server.py` | HTTP server, WebAuthn ceremonies, sessions, storage |
+| `requirements.txt` | Dependencies |
+{{- else if eq .Target.ID "java"}}
+| `src/main/java/com/example/passkeys/PasskeyController.java` | WebAuthn ceremonies and sessions |
+| `src/main/java/com/example/passkeys/SqliteCredentialRepository.java` | Storage, and the lookups the library needs |
+| `src/main/java/com/example/passkeys/PasskeysApplication.java` | Spring Boot entry point and relying party settings |
+| `src/main/resources/application.properties` | Port, database, and session cookie settings |
+| `pom.xml` | Dependencies |
 {{- end}}
 | `public/webauthn.js` | Browser side of the ceremonies, no dependencies |
 | `public/index.html` | Sign-in page |

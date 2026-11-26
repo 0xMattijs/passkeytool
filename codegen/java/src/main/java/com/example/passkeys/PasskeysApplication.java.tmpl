@@ -1,0 +1,32 @@
+package com.example.passkeys;
+
+import com.yubico.webauthn.RelyingParty;
+import com.yubico.webauthn.data.AttestationConveyancePreference;
+import com.yubico.webauthn.data.RelyingPartyIdentity;
+import java.util.Set;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+/** Passkey sign-in server for {{.RPName}}, built with Yubico java-webauthn-server. */
+@SpringBootApplication
+public class PasskeysApplication {
+
+  static final String RP_ID = {{json .RPID}};
+  static final String RP_NAME = {{json .RPName}};
+  static final String ORIGIN = {{json .Origin}};
+
+  public static void main(String[] args) {
+    SpringApplication.run(PasskeysApplication.class, args);
+  }
+
+  @Bean
+  RelyingParty relyingParty(SqliteCredentialRepository credentials) {
+    return RelyingParty.builder()
+        .identity(RelyingPartyIdentity.builder().id(RP_ID).name(RP_NAME).build())
+        .credentialRepository(credentials)
+        .origins(Set.of(ORIGIN))
+        .attestationConveyancePreference(AttestationConveyancePreference.{{enum .Attestation}})
+        .build();
+  }
+}

@@ -41,6 +41,11 @@ const scenarios = [
 const targets = {
   go: { build: [["go", "mod", "tidy"], ["go", "build", "-o", "app", "."]], start: ["./app"] },
   node: { build: [["npm", "install", "--no-audit", "--no-fund", "--silent"]], start: ["node", "server.js"] },
+  java: { build: [["mvn", "-q", "-B", "package", "-DskipTests"]], start: ["java", "-jar", "target/passkeys.jar"] },
+  python: {
+    build: [["python3", "-m", "venv", ".venv"], [".venv/bin/pip", "install", "-q", "-r", "requirements.txt"]],
+    start: [".venv/bin/python", "server.py"],
+  },
 };
 
 const langs = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(targets);
@@ -181,7 +186,7 @@ async function runScenario(lang, sc, port) {
 }
 
 async function waitForServer(origin) {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 600; i++) {
     try {
       await fetch(`${origin}/api/me`);
       return;

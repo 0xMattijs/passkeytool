@@ -54,12 +54,19 @@ func TestCodegenAllCombinations(t *testing.T) {
 	}
 }
 
-// TestCodegenJavaScriptParses runs node --check on the generated JavaScript
-// for a sample of combinations.
-func TestCodegenJavaScriptParses(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
+// TestCodegenScriptsParse checks the syntax of generated JavaScript (node
+// --check) and Python (py_compile) for a sample of combinations. Compiled
+// languages are checked by the e2e suite.
+func TestCodegenScriptsParse(t *testing.T) {
+	checkers := map[string][]string{}
+	if node, err := exec.LookPath("node"); err == nil {
+		checkers[".js"] = []string{node, "--check"}
+	}
+	if py, err := exec.LookPath("python3"); err == nil {
+		checkers[".py"] = []string{py, "-I", "-m", "py_compile"}
+	}
+	if len(checkers) == 0 {
+		t.Skip("neither node nor python3 installed")
 	}
 	for _, target := range codegenTargets {
 		combos := codegenCombos(target.ID)
@@ -70,14 +77,20 @@ func TestCodegenJavaScriptParses(t *testing.T) {
 			}
 			dir := t.TempDir()
 			for _, f := range res.Files {
-				if !strings.HasSuffix(f.Path, ".js") {
+				ext := filepath.Ext(f.Path)
+				check, ok := checkers[ext]
+				if !ok {
 					continue
 				}
-				p := filepath.Join(dir, filepath.Base(f.Path)+".mjs")
+				name := filepath.Base(f.Path)
+				if ext == ".js" {
+					name += ".mjs" // parse as an ES module
+				}
+				p := filepath.Join(dir, name)
 				if err := os.WriteFile(p, []byte(f.Content), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				if out, err := exec.Command(node, "--check", p).CombinedOutput(); err != nil {
+				if out, err := exec.Command(check[0], append(check[1:], p)...).CombinedOutput(); err != nil {
 					t.Fatalf("%s %s %+v:\n%s", target.ID, f.Path, combos[i], out)
 				}
 			}
