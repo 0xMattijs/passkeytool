@@ -884,7 +884,38 @@ function renderManagement() {
 
 // ---------- developer view ----------
 
-const dev = { targets: [], defaults: null, result: null, file: 0, timer: 0, seq: 0 };
+const dev = {
+  targets: [], defaults: null, result: null, timer: 0, seq: 0,
+  group: "server", // which tab: server, client, or docs
+  picked: {}, // the selected file path in each group
+};
+
+// The generated files fall in three groups. The client is the same for
+// every server language, so it gets its own tab.
+const DEV_GROUPS = ["server", "client", "docs"];
+const BUILD_FILES = /(^|\/)(go\.mod|package\.json|requirements\.txt|pom\.xml|[^/]+\.csproj|application\.properties)$/;
+
+function devGroupOf(path) {
+  if (path.startsWith("public/")) return "client";
+  if (path === "README.md" || path === "LICENSE") return "docs";
+  return "server";
+}
+
+// devFiles returns the files of a group in display order: server code,
+// then build files, then the schema; the client script before its page.
+function devFiles(group) {
+  const rank = (p) =>
+    p === "schema.sql" ? 2 : BUILD_FILES.test(p) ? 1 : p === "public/index.html" ? 1 : 0;
+  return dev.result.files
+    .filter((f) => devGroupOf(f.path) === group)
+    .sort((a, b) => rank(a.path) - rank(b.path));
+}
+
+function devCurrentFile() {
+  if (!dev.result) return null;
+  const files = devFiles(dev.group);
+  return files.find((f) => f.path === dev.picked[dev.group]) ?? files[0] ?? null;
+}
 
 function showView() {
   const isDev = location.hash.startsWith("#developer");
@@ -937,6 +968,7 @@ function devHash(spec) {
   for (const [k, v] of Object.entries(spec)) {
     if (JSON.stringify(v) !== JSON.stringify(base[k])) diff[k] = v;
   }
+  if (dev.group !== "server") diff.tab = dev.group;
   return Object.keys(diff).length ? `#developer=${encodeURIComponent(JSON.stringify(diff))}` : "#developer";
 }
 
@@ -954,7 +986,7 @@ async function initDeveloper() {
   if (dev.defaults) {
     // A link opened in this page: apply its options. (generate() updates
     // the URL with replaceState, which doesn't fire hashchange.)
-    setDevSpec({ ...dev.defaults, ...specFromHash() });
+    applyDevHash();
     generate();
     return;
   }
@@ -963,7 +995,7 @@ async function initDeveloper() {
   dev.defaults = defaults;
   const sel = $("#dev-lang");
   for (const t of targets) sel.add(new Option(`${t.name} (${t.library})`, t.id));
-  setDevSpec({ ...defaults, ...specFromHash() });
+  applyDevHash();
   $("#dev-form").addEventListener("input", scheduleGenerate);
   $("#dev-form").addEventListener("change", scheduleGenerate);
   $("#dev-reset").addEventListener("click", () => {
@@ -989,10 +1021,17 @@ async function initDeveloper() {
     });
     generate();
   });
-  $("#dev-copy").addEventListener("click", (e) => copyText(e.target, dev.result?.files[dev.file]?.content ?? ""));
+  $("#dev-copy").addEventListener("click", (e) => copyText(e.target, devCurrentFile()?.content ?? ""));
   $("#dev-share").addEventListener("click", (e) => copyText(e.target, location.href));
   $("#dev-zip").addEventListener("click", downloadZip);
   generate();
+}
+
+// applyDevHash sets the form and the tab from the URL.
+function applyDevHash() {
+  const { tab, ...spec } = specFromHash();
+  dev.group = DEV_GROUPS.includes(tab) ? tab : "server";
+  setDevSpec({ ...dev.defaults, ...spec });
 }
 
 function scheduleGenerate() {
@@ -1022,9 +1061,7 @@ async function generate() {
     renderDevNotes([{ level: "error", text: data.error }]);
     return;
   }
-  const previous = dev.result?.files[dev.file]?.path;
   dev.result = data;
-  dev.file = Math.max(0, data.files.findIndex((f) => f.path === previous));
   renderDevNotes(data.notes.length ? data.notes : [{ level: "ok", text: "No issues found with these options." }]);
   $("#dev-run").textContent = `# Run it\n${data.target.run.join("\n")}\n# then open ${data.spec.origin}`;
   renderDevFiles();
@@ -1041,22 +1078,50 @@ function renderDevNotes(notes) {
   }
 }
 
+function devTab(label, selected, onSelect, title) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("role", "tab");
+  b.setAttribute("aria-selected", String(selected));
+  b.textContent = label;
+  if (title) b.title = title;
+  b.addEventListener("click", onSelect);
+  return b;
+}
+
 function renderDevFiles() {
-  const tabs = $("#dev-files");
-  tabs.replaceChildren();
-  dev.result.files.forEach((f, i) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.setAttribute("role", "tab");
-    b.textContent = f.path;
-    b.setAttribute("aria-selected", String(i === dev.file));
-    b.addEventListener("click", () => {
-      dev.file = i;
-      renderDevFiles();
-    });
-    tabs.append(b);
-  });
-  $("#dev-code").textContent = dev.result.files[dev.file].content;
+  const target = dev.result.target;
+  const groupLabels = { server: `Server · ${target.name}`, client: "Client", docs: "Docs" };
+  $("#dev-groups").replaceChildren(
+    ...DEV_GROUPS.map((g) =>
+      devTab(groupLabels[g], g === dev.group, () => {
+        dev.group = g;
+        history.replaceState(null, "", devHash(devSpec()));
+        renderDevFiles();
+      }),
+    ),
+  );
+
+  const current = devCurrentFile();
+  $("#dev-files").replaceChildren(
+    ...devFiles(dev.group).map((f) =>
+      devTab(f.path.split("/").pop(), f === current, () => {
+        dev.picked[dev.group] = f.path;
+        renderDevFiles();
+      }, f.path),
+    ),
+  );
+
+  const note = $("#dev-file-note");
+  const path = document.createElement("code");
+  path.textContent = current?.path ?? "";
+  const notes = {
+    server: ` · server code using ${target.library}, its build files, and the SQLite schema.`,
+    client: " · the same for every server language: it calls the server's /api endpoints.",
+    docs: " · how to run the app, and its license.",
+  };
+  note.replaceChildren(path, notes[dev.group]);
+  $("#dev-code").textContent = current?.content ?? "";
 }
 
 async function downloadZip() {

@@ -191,13 +191,15 @@
     <section class="col">
       <div class="card dev-code-card">
         <div class="dev-code-head">
-          <div class="tabs dev-files" id="dev-files" role="tablist"></div>
+          <div class="tabs dev-groups" id="dev-groups" role="tablist" aria-label="Part of the app"></div>
           <div class="row">
             <button type="button" class="small-btn" id="dev-copy">Copy file</button>
             <button type="button" class="small-btn" id="dev-share">Copy link</button>
             <button type="button" class="small-btn primary" id="dev-zip">Download .zip</button>
           </div>
         </div>
+        <div class="tabs dev-files" id="dev-files" role="tablist" aria-label="Files"></div>
+        <p class="small muted dev-file-note" id="dev-file-note"></p>
         <pre class="dev-run" id="dev-run"></pre>
         <pre class="dev-code" id="dev-code" tabindex="0"></pre>
       </div>

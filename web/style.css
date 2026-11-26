@@ -210,7 +210,11 @@ main.dev { grid-template-columns: minmax(320px, 400px) 1fr; }
 .dev-notes li.ok::before { background: var(--ok); }
 .dev-code-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .dev-code-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
-.dev-files { margin-bottom: 0; flex-wrap: wrap; border-bottom: none; }
+.dev-groups { margin-bottom: 0; border-bottom: none; }
+.dev-groups button { font-size: 14px; }
+.dev-files { margin: 8px 0 0; flex-wrap: wrap; }
+.dev-file-note { margin: 8px 0; }
+.dev-file-note code { font-size: 12px; }
 .dev-files button { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
 .dev-run, .dev-code {
   margin: 0; padding: 12px 14px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;

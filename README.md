@@ -200,7 +200,8 @@ distribution's FIDO udev rules, for example from the `libfido2` package.
 
 The **Developer** tab generates a complete passkey app for the options you
 choose: a server, a dependency-free browser client, and a SQLite schema. It
-lists warnings about risky option combinations, keeps the configuration in
+shows the files in **Server**, **Client**, and **Docs** tabs; the client is
+the same for every server language. It lists warnings about risky option combinations, keeps the configuration in
 the URL so you can share a link, and downloads the project as a zip. The
 generated code is licensed 0BSD.
 
