@@ -35,6 +35,10 @@ security keys behave with different ceremony options.
 - Client capability detection (`getClientCapabilities()`, UVPAA, conditional
   mediation). Each capability has a **(?)** button that explains what it
   means and which part of the page uses it.
+- A "Manage passkeys" card that detects your browser and OS and lists their
+  built-in pages for managing passkeys and security keys, such as
+  `chrome://settings/securityKeys`, `about:webauthn`, or Windows passkey
+  settings.
 - Signal API calls (`signalUnknownCredential`,
   `signalAllAcceptedCredentials`) when passkeys are deleted or rejected.
 - Failed API requests are logged by the server with the reason, such as an

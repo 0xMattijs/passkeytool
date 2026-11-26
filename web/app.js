@@ -696,6 +696,192 @@ function closeCapHelp() {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCapHelp(); });
 document.addEventListener("click", (e) => { if (!e.target.closest("#caps")) closeCapHelp(); });
 
+// ---------- passkey management pages ----------
+
+// detectClient names the browser and OS, preferring User-Agent Client Hints,
+// which (unlike the UA string) tell Chromium browsers apart.
+function detectClient() {
+  const ua = navigator.userAgent;
+  const brands = (navigator.userAgentData?.brands ?? []).map((b) => b.brand);
+  let browser = "other";
+  if (brands.includes("Microsoft Edge") || /Edg(A|iOS)?\//.test(ua)) browser = "edge";
+  else if (brands.includes("Brave") || navigator.brave) browser = "brave";
+  else if (brands.includes("Opera") || /OPR\//.test(ua)) browser = "opera";
+  else if (/Firefox\/|FxiOS\//.test(ua)) browser = "firefox";
+  else if (brands.includes("Google Chrome")) browser = "chrome";
+  else if (brands.includes("Chromium")) browser = "chromium";
+  else if (/Chrome\/|CriOS\//.test(ua)) browser = "chrome";
+  else if (/Safari\//.test(ua)) browser = "safari";
+
+  const platform = navigator.userAgentData?.platform || ua;
+  let os = "other";
+  if (/Android/i.test(platform) || /Android/.test(ua)) os = "android";
+  else if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) os = "ios";
+  else if (/Win/i.test(platform)) os = "windows";
+  else if (/Mac/i.test(platform)) os = "macos";
+  else if (/Linux|CrOS/i.test(platform)) os = /CrOS/.test(ua) || platform === "Chrome OS" ? "chromeos" : "linux";
+  return { browser, os };
+}
+
+const BROWSER_NAMES = {
+  chrome: "Chrome", chromium: "Chromium", edge: "Edge", brave: "Brave", opera: "Opera",
+  firefox: "Firefox", safari: "Safari", other: "your browser",
+};
+const OS_NAMES = {
+  windows: "Windows", macos: "macOS", linux: "Linux", chromeos: "ChromeOS",
+  android: "Android", ios: "iOS or iPadOS", other: "your system",
+};
+
+// managementPages lists where passkeys can be viewed or deleted. Entries with
+// a url that pages may open get an Open link; internal pages (chrome://,
+// about:) can only be copied, because browsers block links to them.
+function managementPages({ browser, os }) {
+  const out = [];
+  const chromium = (scheme, name) => {
+    out.push({
+      label: `${name} Password Manager`,
+      detail: "Passkeys that this browser saved and syncs, listed with your passwords.",
+      url: `${scheme}://password-manager/passwords`,
+    });
+    out.push({
+      label: "Security keys",
+      detail: "Set or change a security key's PIN, list and delete the passkeys stored on it, or reset it.",
+      url: `${scheme}://settings/securityKeys`,
+    });
+  };
+  if (os === "ios") {
+    out.push({
+      label: "Passwords app",
+      detail: "Passkeys saved in iCloud Keychain. Other passkey providers are under Settings > General > AutoFill & Passwords.",
+    });
+  } else {
+    switch (browser) {
+      case "chrome":
+        if (os === "android") break;
+        chromium("chrome", "Google");
+        break;
+      case "chromium":
+        chromium("chrome", "Chromium");
+        break;
+      case "brave":
+        chromium("brave", "Brave");
+        break;
+      case "opera":
+        chromium("opera", "Opera");
+        break;
+      case "edge":
+        out.push({
+          label: "Edge passwords",
+          detail: "Passkeys that Edge saved and syncs, listed with your passwords.",
+          url: "edge://wallet/passwords",
+        });
+        break;
+      case "firefox":
+        out.push({
+          label: "Security keys",
+          detail: "Set or change a security key's PIN, list and delete the passkeys stored on it, or reset it. Firefox stores no passkeys itself; it uses the system's store or a security key.",
+          url: "about:webauthn",
+        });
+        break;
+      case "safari":
+        out.push({
+          label: "Passwords app",
+          detail: "Safari saves passkeys in iCloud Keychain. Safari has no page for managing security keys.",
+        });
+        break;
+    }
+  }
+  switch (os) {
+    case "windows":
+      out.push({
+        label: "Windows passkeys",
+        detail: "Passkeys saved with Windows Hello on this device. In Settings: Accounts > Passkeys.",
+        url: "ms-settings:savedpasskeys",
+        open: true,
+      });
+      out.push({
+        label: "Windows security key settings",
+        detail: "Reset a security key or change its PIN. In Settings: Accounts > Sign-in options > Security key.",
+      });
+      break;
+    case "macos":
+      if (browser !== "safari") {
+        out.push({
+          label: "Passwords app",
+          detail: "Passkeys saved in iCloud Keychain, which Chrome, Edge, and Firefox can also use on macOS.",
+        });
+      }
+      break;
+    case "android":
+      out.push({
+        label: "Google Password Manager",
+        detail: "Passkeys saved to your Google account, synced to your Android devices and Chrome. On the device: Settings > Passwords & accounts.",
+        url: "https://passwords.google.com/",
+        open: true,
+      });
+      break;
+    case "linux":
+      out.push({
+        label: "This tool's key command",
+        detail: "Lists, deletes, and resets passkeys on a USB security key from the terminal.",
+        url: "./passkeys-test key ls",
+      });
+      break;
+  }
+  out.push({
+    label: "Password manager extensions",
+    detail: "Passkeys saved by an extension such as Bitwarden or 1Password are only visible in that extension's vault. The provider name in each passkey's details tells you where it lives.",
+  });
+  return out;
+}
+
+function renderManagement() {
+  const client = detectClient();
+  const intro = $("#manage-intro");
+  intro.textContent = `Detected ${BROWSER_NAMES[client.browser]} on ${OS_NAMES[client.os]}. Deleting a passkey here doesn't remove it from where it's stored; use these pages for that. Browsers block links to their internal pages, so copy the address into the address bar.`;
+  const ul = $("#manage");
+  for (const p of managementPages(client)) {
+    const li = document.createElement("li");
+    const head = document.createElement("div");
+    head.className = "manage-head";
+    const title = document.createElement("strong");
+    title.textContent = p.label;
+    head.append(title);
+    if (p.url) {
+      const code = document.createElement("code");
+      code.textContent = p.url;
+      head.append(code);
+      if (p.open) {
+        const a = document.createElement("a");
+        a.href = p.url;
+        a.textContent = "Open";
+        a.className = "small-link";
+        if (p.url.startsWith("http")) { a.target = "_blank"; a.rel = "noopener"; }
+        head.append(a);
+      }
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "small-btn";
+      copy.textContent = "Copy";
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(p.url);
+          copy.textContent = "Copied";
+        } catch {
+          copy.textContent = "Copy failed";
+        }
+        setTimeout(() => (copy.textContent = "Copy"), 1500);
+      });
+      head.append(copy);
+    }
+    const detail = document.createElement("div");
+    detail.className = "muted small";
+    detail.textContent = p.detail;
+    li.append(head, detail);
+    ul.append(li);
+  }
+}
+
 // ---------- wiring ----------
 
 function withBusy(btn, fn) {
@@ -799,6 +985,7 @@ async function init() {
   $("#log").innerHTML = '<li class="empty">Register or sign in to see each WebAuthn ceremony step.</li>';
 
   renderCaps();
+  renderManagement();
   const me = await api("GET", "/api/me");
   render(me.user);
 }
