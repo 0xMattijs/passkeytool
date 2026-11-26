@@ -58,6 +58,7 @@ Flags:
 	cfg := server.Config{
 		Addr: *addr, RPName: *rpName, Data: *data, TLSCert: *tlsCert, TLSKey: *tlsKey, AAGUIDs: *aaguids,
 		MaxUsers: *maxUsers, MaxPasskeys: *maxPasskeys, RateLimit: *rateLimit, TrustProxy: *trustProxy, Notice: *notice,
+		Version: version,
 	}
 	if *origin == "" {
 		host, port, err := net.SplitHostPort(*addr)

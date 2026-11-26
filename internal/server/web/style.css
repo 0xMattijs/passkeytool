@@ -222,3 +222,6 @@ main.dev { grid-template-columns: minmax(320px, 400px) 1fr; }
 }
 .dev-run { color: var(--muted); }
 .dev-code { max-height: calc(100vh - 220px); min-height: 300px; tab-size: 2; }
+
+.site-footer { margin: 24px; text-align: center; }
+.site-footer a { color: inherit; }

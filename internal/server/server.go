@@ -166,6 +166,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"rpName":  s.cfg.RPName,
 		"origins": s.cfg.Origins,
 		"notice":  s.cfg.Notice,
+		"version": s.cfg.Version,
 	})
 }
 
@@ -741,4 +742,5 @@ type Config struct {
 	RateLimit   int  // state-changing API requests per minute per client
 	TrustProxy  bool // take the client address from X-Forwarded-For
 	Notice      string
+	Version     string // shown in the page footer
 }

@@ -1167,6 +1167,8 @@ async function init() {
   codes[0].textContent = cfg.rpId;
   codes[1].textContent = cfg.origins.join(", ");
 
+  if (cfg.version) $("#version").textContent = `passkeytool ${cfg.version}`;
+
   if (cfg.notice) {
     const notice = $("#notice");
     notice.hidden = false;
