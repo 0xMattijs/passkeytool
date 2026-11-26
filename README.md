@@ -93,6 +93,27 @@ up in a running server immediately. Deleting a passkey on the server doesn't
 remove it from the authenticator; the web UI sends a Signal API hint where
 the browser supports it.
 
+## Security keys
+
+On Linux, the `key` command manages the passkeys stored on a USB security
+key directly over HID, without a browser. Use it to remove passkeys that the
+server no longer knows, which otherwise keep showing up in the browser's
+account picker.
+
+```sh
+./passkeys-test key devices                  # list connected keys
+./passkeys-test key info                     # supported features, free slots, PIN retries
+./passkeys-test key ls                       # list passkeys (asks for the PIN)
+./passkeys-test key ls -rp localhost         # only this RP ID
+./passkeys-test key rm <credential-id>       # delete a passkey (asks for the PIN)
+```
+
+`key ls` compares each passkey with the data file and shows whether the
+server can sign you in with it. With several keys connected, choose one with
+`-device /dev/hidrawN`. The key must support CTAP 2.1 credential management
+and have a PIN set. If you get a permission error, install your
+distribution's FIDO udev rules, for example from the `libfido2` package.
+
 ## Related origins
 
 `serve` publishes a

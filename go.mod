@@ -2,7 +2,10 @@ module github.com/0xMattijs/passkeytool
 
 go 1.26.0
 
-require github.com/go-webauthn/webauthn v0.18.2
+require (
+	github.com/go-webauthn/webauthn v0.18.2
+	golang.org/x/term v0.48.0
+)
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
@@ -15,5 +18,5 @@ require (
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 )
