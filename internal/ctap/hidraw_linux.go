@@ -1,4 +1,4 @@
-package main
+package ctap
 
 import (
 	"bufio"
@@ -11,27 +11,27 @@ import (
 	"time"
 )
 
-// hidDeviceInfo describes a FIDO HID device found under /sys/class/hidraw.
-type hidDeviceInfo struct {
+// DeviceInfo describes a FIDO HID device found under /sys/class/hidraw.
+type DeviceInfo struct {
 	Path  string // /dev/hidrawN
 	Name  string
 	USBID string // vendor:product
 }
 
-// findFIDODevices lists hidraw devices whose report descriptor declares the
+// FindDevices lists hidraw devices whose report descriptor declares the
 // FIDO usage page (0xF1D0).
-func findFIDODevices() ([]hidDeviceInfo, error) {
+func FindDevices() ([]DeviceInfo, error) {
 	dirs, err := filepath.Glob("/sys/class/hidraw/hidraw*")
 	if err != nil {
 		return nil, err
 	}
-	var out []hidDeviceInfo
+	var out []DeviceInfo
 	for _, dir := range dirs {
 		desc, err := os.ReadFile(filepath.Join(dir, "device", "report_descriptor"))
 		if err != nil || !hasFIDOUsagePage(desc) {
 			continue
 		}
-		info := hidDeviceInfo{Path: "/dev/" + filepath.Base(dir)}
+		info := DeviceInfo{Path: "/dev/" + filepath.Base(dir)}
 		if f, err := os.Open(filepath.Join(dir, "device", "uevent")); err == nil {
 			sc := bufio.NewScanner(f)
 			for sc.Scan() {
@@ -55,7 +55,7 @@ func findFIDODevices() ([]hidDeviceInfo, error) {
 // hidrawTransport talks to a /dev/hidrawN device.
 type hidrawTransport struct{ f *os.File }
 
-func openHID(path string) (hidTransport, error) {
+func OpenHID(path string) (Transport, error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrPermission) {
 		return nil, fmt.Errorf("%w (install your distribution's FIDO udev rules, for example from the libfido2 package)", err)

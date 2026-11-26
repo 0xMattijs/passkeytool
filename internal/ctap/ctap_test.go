@@ -1,4 +1,4 @@
-package main
+package ctap
 
 import (
 	"bytes"
@@ -42,7 +42,7 @@ type fakeKey struct {
 
 type fakeRP struct {
 	id    string
-	creds []keyCredential
+	creds []Credential
 }
 
 const fakeCID = 0x01020304
@@ -55,12 +55,12 @@ func newFakeKey(t *testing.T, protocols ...uint) *fakeKey {
 	return &fakeKey{
 		t: t, protocols: protocols, pin: "1234", retries: 8, priv: priv,
 		rps: []*fakeRP{
-			{id: "localhost", creds: []keyCredential{
-				{ID: []byte("cred-alice"), User: keyUser{ID: []byte("uid-alice"), Name: "alice", DisplayName: "Alice"}},
-				{ID: []byte("cred-bob"), User: keyUser{ID: []byte("uid-bob"), Name: "bob"}, CredProtect: 3},
+			{id: "localhost", creds: []Credential{
+				{ID: []byte("cred-alice"), User: User{ID: []byte("uid-alice"), Name: "alice", DisplayName: "Alice"}},
+				{ID: []byte("cred-bob"), User: User{ID: []byte("uid-bob"), Name: "bob"}, CredProtect: 3},
 			}},
-			{id: "example.com", creds: []keyCredential{
-				{ID: bytes.Repeat([]byte{0xab}, 64), User: keyUser{ID: []byte("u3"), Name: "a-rather-long-user-name@example.com"}},
+			{id: "example.com", creds: []Credential{
+				{ID: bytes.Repeat([]byte{0xab}, 64), User: User{ID: []byte("u3"), Name: "a-rather-long-user-name@example.com"}},
 			}},
 		},
 	}
@@ -152,7 +152,7 @@ func (k *fakeKey) handle(cmd byte, body []byte) []byte {
 	case ctapReset:
 		k.pin, k.rps = "", nil
 		return []byte{0}
-	case ctapCredMgmt:
+	case CmdCredMgmt:
 		var req credMgmtReq
 		if err := webauthncbor.Unmarshal(body, &req); err != nil {
 			k.t.Fatalf("credMgmt request: %v", err)
@@ -270,7 +270,7 @@ func (k *fakeKey) credMgmt(req credMgmtReq) []byte {
 	}
 	rpResp := func(withTotal bool) []byte {
 		rp := k.rps[k.rpCursor]
-		m := map[int]any{3: map[string]any{"id": rp.id}, 4: rpIDHash(rp.id)}
+		m := map[int]any{3: map[string]any{"id": rp.id}, 4: RPIDHash(rp.id)}
 		if withTotal {
 			m[5] = len(k.rps)
 		}
@@ -295,7 +295,7 @@ func (k *fakeKey) credMgmt(req credMgmtReq) []byte {
 	case cmEnumerateCredsBegin:
 		k.crRP = nil
 		for _, rp := range k.rps {
-			if bytes.Equal(rpIDHash(rp.id), req.Params.RPIDHash) {
+			if bytes.Equal(RPIDHash(rp.id), req.Params.RPIDHash) {
 				k.crRP = rp
 			}
 		}
@@ -325,66 +325,66 @@ func TestKeyCredentialManagement(t *testing.T) {
 	for _, protocols := range [][]uint{{2, 1}, {1}} {
 		t.Run(fmt.Sprintf("protocols %v", protocols), func(t *testing.T) {
 			k := newFakeKey(t, protocols...)
-			d, err := newCTAPDevice(k)
+			d, err := NewDevice(k)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if d.cid != fakeCID {
 				t.Fatalf("cid = %#x", d.cid)
 			}
-			info, err := d.getInfo()
+			info, err := d.GetInfo()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if info.credMgmtCommand() != ctapCredMgmt {
+			if info.CredMgmtCommand() != CmdCredMgmt {
 				t.Fatal("credMgmt not detected")
 			}
 
-			if _, err := d.getPinToken(info, "0000"); err == nil || !strings.Contains(err.Error(), "7 attempts left") {
+			if _, err := d.GetPINToken(info, "0000"); err == nil || !strings.Contains(err.Error(), "7 attempts left") {
 				t.Fatalf("wrong PIN: err = %v", err)
 			}
-			token, err := d.getPinToken(info, "1234")
+			token, err := d.GetPINToken(info, "1234")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if token.proto.version != protocols[0] {
 				t.Errorf("protocol %d, want %d", token.proto.version, protocols[0])
 			}
-			m := &credManager{d: d, cmd: ctapCredMgmt, token: token}
+			m := &CredManager{d: d, cmd: CmdCredMgmt, token: token}
 
-			if n, _, err := m.metadata(); err != nil || n != 3 {
+			if n, _, err := m.Metadata(); err != nil || n != 3 {
 				t.Fatalf("metadata = %d, %v", n, err)
 			}
-			rps, err := m.relyingParties()
+			rps, err := m.RelyingParties()
 			if err != nil || len(rps) != 2 || rps[1].RP.ID != "example.com" {
 				t.Fatalf("relyingParties = %+v, %v", rps, err)
 			}
-			creds, err := m.credentials(rpIDHash("localhost"))
+			creds, err := m.Credentials(RPIDHash("localhost"))
 			if err != nil || len(creds) != 2 || creds[0].User.Name != "alice" || creds[0].User.DisplayName != "Alice" {
 				t.Fatalf("credentials = %+v, %v", creds, err)
 			}
-			if creds[1].CredProtect != 3 || credProtectName(creds[1].CredProtect) != "UV required" {
+			if creds[1].CredProtect != 3 || CredProtectName(creds[1].CredProtect) != "UV required" {
 				t.Errorf("credProtect = %d", creds[1].CredProtect)
 			}
-			long, err := m.credentials(rpIDHash("example.com"))
+			long, err := m.Credentials(RPIDHash("example.com"))
 			if err != nil || len(long) != 1 || len(long[0].ID) != 64 {
 				t.Fatalf("multi-report credential = %+v, %v", long, err)
 			}
-			if none, err := m.credentials(rpIDHash("nowhere.test")); err != nil || len(none) != 0 {
+			if none, err := m.Credentials(RPIDHash("nowhere.test")); err != nil || len(none) != 0 {
 				t.Fatalf("unknown RP = %+v, %v", none, err)
 			}
 
-			rp, c, err := m.findCredential([]byte("cred-alice"))
+			rp, c, err := m.FindCredential([]byte("cred-alice"))
 			if err != nil || c == nil || rp.RP.ID != "localhost" {
 				t.Fatalf("findCredential = %v, %v, %v", rp, c, err)
 			}
-			if err := m.deleteCredential([]byte("cred-alice")); err != nil {
+			if err := m.DeleteCredential([]byte("cred-alice")); err != nil {
 				t.Fatal(err)
 			}
-			if _, c, _ := m.findCredential([]byte("cred-alice")); c != nil {
+			if _, c, _ := m.FindCredential([]byte("cred-alice")); c != nil {
 				t.Fatal("credential still present after delete")
 			}
-			if err := m.deleteCredential([]byte("cred-alice")); !errors.Is(err, ctapError(0x2e)) {
+			if err := m.DeleteCredential([]byte("cred-alice")); !errors.Is(err, ctapError(0x2e)) {
 				t.Fatalf("second delete: %v", err)
 			}
 		})
@@ -434,27 +434,27 @@ func TestKeySetAndChangePIN(t *testing.T) {
 		t.Run(fmt.Sprintf("protocols %v", protocols), func(t *testing.T) {
 			k := newFakeKey(t, protocols...)
 			k.pin = ""
-			d, err := newCTAPDevice(k)
+			d, err := NewDevice(k)
 			if err != nil {
 				t.Fatal(err)
 			}
-			info, err := d.getInfo()
+			info, err := d.GetInfo()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := d.setPIN(info, "", "123"); err == nil {
+			if err := d.SetPIN(info, "", "123"); err == nil {
 				t.Fatal("accepted a 3-character PIN")
 			}
-			if err := d.setPIN(info, "", "4321"); err != nil || k.pin != "4321" {
+			if err := d.SetPIN(info, "", "4321"); err != nil || k.pin != "4321" {
 				t.Fatalf("set PIN: pin=%q, %v", k.pin, err)
 			}
-			if err := d.setPIN(info, "0000", "5555"); err == nil || !strings.Contains(err.Error(), "attempts left") {
+			if err := d.SetPIN(info, "0000", "5555"); err == nil || !strings.Contains(err.Error(), "attempts left") {
 				t.Fatalf("change with wrong PIN: %v", err)
 			}
-			if err := d.setPIN(info, "4321", "new-pin-éé"); err != nil || k.pin != "new-pin-éé" {
+			if err := d.SetPIN(info, "4321", "new-pin-éé"); err != nil || k.pin != "new-pin-éé" {
 				t.Fatalf("change PIN: pin=%q, %v", k.pin, err)
 			}
-			if _, err := d.getPinToken(info, "new-pin-éé"); err != nil {
+			if _, err := d.GetPINToken(info, "new-pin-éé"); err != nil {
 				t.Fatalf("token with the new PIN: %v", err)
 			}
 		})
@@ -463,11 +463,11 @@ func TestKeySetAndChangePIN(t *testing.T) {
 
 func TestKeyReset(t *testing.T) {
 	k := newFakeKey(t, 2, 1)
-	d, err := newCTAPDevice(k)
+	d, err := NewDevice(k)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.reset(); err != nil {
+	if err := d.Reset(); err != nil {
 		t.Fatal(err)
 	}
 	if k.pin != "" || len(k.rps) != 0 {

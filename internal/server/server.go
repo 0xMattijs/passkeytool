@@ -1,12 +1,14 @@
-package main
+package server
 
 import (
 	"crypto/rand"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/0xMattijs/passkeytool/internal/aaguid"
+	"github.com/0xMattijs/passkeytool/internal/attestation"
+	"github.com/0xMattijs/passkeytool/internal/store"
 	"io/fs"
 	"log"
 	"net/http"
@@ -28,8 +30,8 @@ const (
 
 type Server struct {
 	wa      *webauthn.WebAuthn
-	store   *Store
-	cfg     serveConfig
+	store   *store.Store
+	cfg     Config
 	secure  bool
 	mu      sync.Mutex
 	session map[string]*session
@@ -40,12 +42,12 @@ type session struct {
 	UserID   []byte
 	Expires  time.Time
 	Reg      *webauthn.SessionData
-	RegUser  *User // pending user (new account) or copy of the current user
+	RegUser  *store.User // pending user (new account) or copy of the current user
 	RegIsNew bool
 	Logins   map[string]*webauthn.SessionData // pending logins keyed by challenge
 }
 
-func NewServer(cfg serveConfig, store *Store) (*Server, error) {
+func New(cfg Config, store *store.Store) (*Server, error) {
 	wa, err := webauthn.New(&webauthn.Config{
 		RPID:          cfg.RPID,
 		RPDisplayName: cfg.RPName,
@@ -138,15 +140,15 @@ func (s *Server) withSession(sess *session, fn func()) {
 	fn()
 }
 
-func (s *Server) currentUser(sess *session) (*User, error) {
+func (s *Server) currentUser(sess *session) (*store.User, error) {
 	var uid []byte
 	s.withSession(sess, func() { uid = sess.UserID })
 	if uid == nil {
 		return nil, nil
 	}
-	var user *User
-	err := s.store.View(func(d *storeData) error {
-		user = d.userByID(uid)
+	var user *store.User
+	err := s.store.View(func(d *store.Data) error {
+		user = d.UserByID(uid)
 		return nil
 	})
 	if user == nil && err == nil {
@@ -225,7 +227,7 @@ func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var user *User
+	var user *store.User
 	isNew := false
 	if current != nil {
 		// Signed in: add another passkey to the current account.
@@ -245,8 +247,8 @@ func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var taken, full bool
-		_ = s.store.View(func(d *storeData) error {
-			taken = d.userByName(req.Username) != nil
+		_ = s.store.View(func(d *store.Data) error {
+			taken = d.UserByName(req.Username) != nil
 			full = s.cfg.MaxUsers > 0 && len(d.Users) >= s.cfg.MaxUsers
 			return nil
 		})
@@ -262,7 +264,7 @@ func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 		if display == "" {
 			display = req.Username
 		}
-		user = &User{ID: randomBytes(32), Name: req.Username, DisplayName: display}
+		user = &store.User{ID: randomBytes(32), Name: req.Username, DisplayName: display}
 		isNew = true
 	}
 
@@ -318,7 +320,7 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 	sess := s.getSession(w, r)
 	var (
 		sd    *webauthn.SessionData
-		user  *User
+		user  *store.User
 		isNew bool
 	)
 	s.withSession(sess, func() {
@@ -335,31 +337,31 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, describeErr(err))
 		return
 	}
-	stored := StoredCredential{
+	stored := store.Credential{
 		Credential: *cred,
 		Nickname:   truncate(strings.TrimSpace(r.URL.Query().Get("nickname")), maxNickname),
 		CreatedAt:  time.Now().UTC(),
 	}
 
-	var saved *User
-	err = s.store.Update(func(d *storeData) error {
-		if _, i := d.credential(cred.ID); i >= 0 {
+	var saved *store.User
+	err = s.store.Update(func(d *store.Data) error {
+		if _, i := d.FindCredential(cred.ID); i >= 0 {
 			return errors.New("credential already registered")
 		}
 		if isNew {
-			if d.userByName(user.Name) != nil {
+			if d.UserByName(user.Name) != nil {
 				return fmt.Errorf("username %q was taken in the meantime", user.Name)
 			}
 			if s.cfg.MaxUsers > 0 && len(d.Users) >= s.cfg.MaxUsers {
 				return fmt.Errorf("this server is full (%d accounts); try again after it resets", s.cfg.MaxUsers)
 			}
 			user.CreatedAt = time.Now().UTC()
-			user.Credentials = []StoredCredential{stored}
+			user.Credentials = []store.Credential{stored}
 			d.Users = append(d.Users, user)
 			saved = user
 			return nil
 		}
-		u := d.userByID(user.ID)
+		u := d.UserByID(user.ID)
 		if u == nil {
 			return errors.New("account no longer exists")
 		}
@@ -375,7 +377,7 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.withSession(sess, func() { sess.UserID = saved.ID })
-	log.Printf("registered credential %s for user %q (aaguid %s)", b64(cred.ID), saved.Name, formatAAGUID(cred.Authenticator.AAGUID))
+	log.Printf("registered credential %s for user %q (aaguid %s)", store.EncodeID(cred.ID), saved.Name, aaguid.Format(cred.Authenticator.AAGUID))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":       userView(saved),
 		"credential": credentialView(stored),
@@ -425,9 +427,9 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 		// Discoverable (usernameless) login.
 		assertion, sd, err = s.wa.BeginDiscoverableMediatedLogin(protocol.CredentialMediationRequirement(req.Mediation), opts...)
 	} else {
-		var user *User
-		_ = s.store.View(func(d *storeData) error {
-			user = d.userByName(username)
+		var user *store.User
+		_ = s.store.View(func(d *store.Data) error {
+			user = d.UserByName(username)
 			return nil
 		})
 		if user == nil || len(user.Credentials) == 0 {
@@ -469,15 +471,15 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var snapshot *storeData
-	if err := s.store.View(func(d *storeData) error { snapshot = d; return nil }); err != nil {
+	var snapshot *store.Data
+	if err := s.store.View(func(d *store.Data) error { snapshot = d; return nil }); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	lookup := func(rawID, userHandle []byte) (webauthn.User, error) {
-		u, _ := snapshot.credential(rawID)
+		u, _ := snapshot.FindCredential(rawID)
 		if u == nil {
-			return nil, fmt.Errorf("unknown credential %s", b64(rawID))
+			return nil, fmt.Errorf("unknown credential %s", store.EncodeID(rawID))
 		}
 		if len(userHandle) > 0 && string(userHandle) != string(u.ID) {
 			return nil, errors.New("user handle does not match credential owner")
@@ -489,7 +491,7 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 	if len(sd.UserID) == 0 {
 		_, cred, err = s.wa.ValidatePasskeyLogin(lookup, *sd, parsed)
 	} else {
-		u := snapshot.userByID(sd.UserID)
+		u := snapshot.UserByID(sd.UserID)
 		if u == nil {
 			writeError(w, http.StatusBadRequest, errors.New("account no longer exists"))
 			return
@@ -502,11 +504,11 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		saved  *User
-		stored StoredCredential
+		saved  *store.User
+		stored store.Credential
 	)
-	err = s.store.Update(func(d *storeData) error {
-		u, i := d.credential(cred.ID)
+	err = s.store.Update(func(d *store.Data) error {
+		u, i := d.FindCredential(cred.ID)
 		if u == nil {
 			return errors.New("credential was deleted during login")
 		}
@@ -524,7 +526,7 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.withSession(sess, func() { sess.UserID = saved.ID })
-	log.Printf("user %q signed in with credential %s", saved.Name, b64(cred.ID))
+	log.Printf("user %q signed in with credential %s", saved.Name, store.EncodeID(cred.ID))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":       userView(saved),
 		"credential": credentialView(stored),
@@ -532,9 +534,9 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteCredential(w http.ResponseWriter, r *http.Request) {
-	s.modifyOwnCredential(w, r, func(u *User, id []byte) error {
-		if !u.deleteCredential(id) {
-			return ErrNotFound
+	s.modifyOwnCredential(w, r, func(u *store.User, id []byte) error {
+		if !u.DeleteCredential(id) {
+			return store.ErrNotFound
 		}
 		return nil
 	})
@@ -548,39 +550,39 @@ func (s *Server) handleRenameCredential(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	s.modifyOwnCredential(w, r, func(u *User, id []byte) error {
+	s.modifyOwnCredential(w, r, func(u *store.User, id []byte) error {
 		for i := range u.Credentials {
 			if string(u.Credentials[i].ID) == string(id) {
 				u.Credentials[i].Nickname = truncate(strings.TrimSpace(body.Nickname), maxNickname)
 				return nil
 			}
 		}
-		return ErrNotFound
+		return store.ErrNotFound
 	})
 }
 
-func (s *Server) modifyOwnCredential(w http.ResponseWriter, r *http.Request, fn func(u *User, id []byte) error) {
+func (s *Server) modifyOwnCredential(w http.ResponseWriter, r *http.Request, fn func(u *store.User, id []byte) error) {
 	sess := s.getSession(w, r)
 	current, err := s.currentUser(sess)
 	if err != nil || current == nil {
 		writeError(w, http.StatusUnauthorized, errors.New("not signed in"))
 		return
 	}
-	id, err := decodeB64(r.PathValue("id"))
+	id, err := store.DecodeID(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("bad credential id: %w", err))
 		return
 	}
-	var saved *User
-	err = s.store.Update(func(d *storeData) error {
-		u := d.userByID(current.ID)
+	var saved *store.User
+	err = s.store.Update(func(d *store.Data) error {
+		u := d.UserByID(current.ID)
 		if u == nil {
-			return ErrNotFound
+			return store.ErrNotFound
 		}
 		saved = u
 		return fn(u, id)
 	})
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, errors.New("credential not found"))
 		return
 	}
@@ -598,8 +600,8 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("not signed in"))
 		return
 	}
-	err = s.store.Update(func(d *storeData) error {
-		d.deleteUser(current.Name)
+	err = s.store.Update(func(d *store.Data) error {
+		d.DeleteUser(current.Name)
 		return nil
 	})
 	if err != nil {
@@ -612,13 +614,13 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 // ---------- views ----------
 
-func userView(u *User) map[string]any {
+func userView(u *store.User) map[string]any {
 	creds := make([]map[string]any, len(u.Credentials))
 	for i, c := range u.Credentials {
 		creds[i] = credentialView(c)
 	}
 	return map[string]any{
-		"id":          b64(u.ID),
+		"id":          store.EncodeID(u.ID),
 		"name":        u.Name,
 		"displayName": u.DisplayName,
 		"createdAt":   u.CreatedAt,
@@ -626,12 +628,12 @@ func userView(u *User) map[string]any {
 	}
 }
 
-func credentialView(c StoredCredential) map[string]any {
-	provider := lookupAAGUID(c.Authenticator.AAGUID)
+func credentialView(c store.Credential) map[string]any {
+	provider := aaguid.Lookup(c.Authenticator.AAGUID)
 	v := map[string]any{
-		"id":                b64(c.ID),
+		"id":                store.EncodeID(c.ID),
 		"nickname":          c.Nickname,
-		"aaguid":            formatAAGUID(c.Authenticator.AAGUID),
+		"aaguid":            aaguid.Format(c.Authenticator.AAGUID),
 		"aaguidName":        provider.Name,
 		"iconLight":         provider.IconLight,
 		"iconDark":          provider.IconDark,
@@ -644,7 +646,7 @@ func credentialView(c StoredCredential) map[string]any {
 		"flags":             c.Flags,
 		"createdAt":         c.CreatedAt,
 		"useCount":          c.UseCount,
-		"attestation":       summarizeAttestation(c.Attestation.Object),
+		"attestation":       attestation.Summarize(c.Attestation.Object),
 	}
 	if !c.LastUsedAt.IsZero() {
 		v["lastUsedAt"] = c.LastUsedAt
@@ -692,9 +694,7 @@ func randomBytes(n int) []byte {
 	return b
 }
 
-func randomString(n int) string { return b64(randomBytes(n)) }
-
-func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+func randomString(n int) string { return store.EncodeID(randomBytes(n)) }
 
 type statusRecorder struct {
 	http.ResponseWriter
@@ -724,11 +724,21 @@ func logRequests(next http.Handler) http.Handler {
 	})
 }
 
-// decodeB64 accepts base64url (padded or not) and standard base64.
-func decodeB64(s string) ([]byte, error) {
-	s = strings.TrimRight(s, "=")
-	if b, err := base64.RawURLEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	return base64.RawStdEncoding.DecodeString(s)
+// Config configures the server.
+type Config struct {
+	Addr    string
+	RPID    string
+	RPName  string
+	Origins []string
+	Data    string
+	TLSCert string
+	TLSKey  string
+	AAGUIDs string
+
+	// Limits for a publicly reachable server; zero means unlimited.
+	MaxUsers    int
+	MaxPasskeys int
+	RateLimit   int  // state-changing API requests per minute per client
+	TrustProxy  bool // take the client address from X-Forwarded-For
+	Notice      string
 }

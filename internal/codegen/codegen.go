@@ -1,4 +1,4 @@
-package main
+package codegen
 
 import (
 	"archive/zip"
@@ -6,17 +6,12 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"go/format"
 	"io"
 	"io/fs"
-	"log"
-	"net/http"
 	"net/url"
-	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 	"text/template"
@@ -27,11 +22,11 @@ import (
 // schema. Every target implements the same HTTP API, so one client and one
 // end-to-end test (e2e/) cover them all.
 
-//go:embed all:codegen
-var codegenFS embed.FS
+//go:embed all:templates
+var templateFS embed.FS
 
-// codegenSpec is the language-neutral description of what to generate.
-type codegenSpec struct {
+// Spec is the language-neutral description of what to generate.
+type Spec struct {
 	Language         string   `json:"language"`
 	RPID             string   `json:"rpId"`
 	RPName           string   `json:"rpName"`
@@ -47,8 +42,8 @@ type codegenSpec struct {
 	ConditionalUI    bool     `json:"conditionalUI"`
 }
 
-func defaultCodegenSpec() codegenSpec {
-	return codegenSpec{
+func DefaultSpec() Spec {
+	return Spec{
 		Language:         "go",
 		RPID:             "localhost",
 		RPName:           "Example",
@@ -62,8 +57,8 @@ func defaultCodegenSpec() codegenSpec {
 	}
 }
 
-// codegenTarget is one server language and library.
-type codegenTarget struct {
+// Target is one server language and library.
+type Target struct {
 	ID         string   `json:"id"`
 	Name       string   `json:"name"`
 	Library    string   `json:"library"`
@@ -72,7 +67,7 @@ type codegenTarget struct {
 	Framework  string   `json:"framework"`
 	Run        []string `json:"run"`
 	// unsupported maps spec features to how the template works around them.
-	unsupported func(s codegenSpec) []string
+	unsupported func(s Spec) []string
 }
 
 // Library versions the templates are written and tested against.
@@ -96,13 +91,13 @@ const (
 	codegenDotnet       = "10.0"
 )
 
-var codegenTargets = []codegenTarget{
+var Targets = []Target{
 	{
 		ID: "go", Name: "Go", Library: "go-webauthn/webauthn",
 		LibraryURL: "https://github.com/go-webauthn/webauthn", Version: goWebAuthnVersion,
 		Framework: "net/http, SQLite (modernc.org/sqlite, no cgo)",
 		Run:       []string{"go mod tidy", "go run ."},
-		unsupported: func(s codegenSpec) []string {
+		unsupported: func(s Spec) []string {
 			return nil
 		},
 	},
@@ -111,7 +106,7 @@ var codegenTargets = []codegenTarget{
 		LibraryURL: "https://simplewebauthn.dev", Version: simpleWebAuthnVer,
 		Framework: "Express 5, node:sqlite (Node " + codegenNodeMinimum + " or later)",
 		Run:       []string{"npm install", "npm start"},
-		unsupported: func(s codegenSpec) []string {
+		unsupported: func(s Spec) []string {
 			var out []string
 			if s.Attestation == "indirect" {
 				out = append(out, `@simplewebauthn/server has no "indirect" attestation; the generated code sets it on the options JSON directly.`)
@@ -130,7 +125,7 @@ var codegenTargets = []codegenTarget{
 		LibraryURL: "https://github.com/duo-labs/py_webauthn", Version: pyWebAuthnVersion,
 		Framework: "FastAPI, sqlite3 (Python " + codegenPythonMin + " or later)",
 		Run:       []string{"python3 -m venv .venv", ".venv/bin/pip install -r requirements.txt", ".venv/bin/python server.py"},
-		unsupported: func(s codegenSpec) []string {
+		unsupported: func(s Spec) []string {
 			var out []string
 			if s.CredProps || s.PRF {
 				out = append(out, "py_webauthn has no extensions parameter; the generated code adds credProps and prf to the options JSON directly.")
@@ -146,7 +141,7 @@ var codegenTargets = []codegenTarget{
 		LibraryURL: "https://github.com/Yubico/java-webauthn-server", Version: yubicoVersion,
 		Framework: "Spring Boot " + springBootVersion + ", SQLite JDBC (Java " + codegenJavaMin + " or later, Maven)",
 		Run:       []string{"mvn -q package -DskipTests", "java -jar target/passkeys.jar"},
-		unsupported: func(s codegenSpec) []string {
+		unsupported: func(s Spec) []string {
 			if s.Attestation != "none" {
 				return []string{"The Yubico library sets the attestation preference on the RelyingParty, so it applies to every registration."}
 			}
@@ -158,7 +153,7 @@ var codegenTargets = []codegenTarget{
 		LibraryURL: "https://github.com/passwordless-lib/fido2-net-lib", Version: fido2NetVersion,
 		Framework: "ASP.NET Core minimal API, Microsoft.Data.Sqlite (.NET " + codegenDotnet + " or later)",
 		Run:       []string{"dotnet run"},
-		unsupported: func(s codegenSpec) []string {
+		unsupported: func(s Spec) []string {
 			if s.PRF {
 				return []string{`fido2-net-lib serializes an empty PRF input as {"eval": null}, which browsers reject; the generated code sends {} instead.`}
 			}
@@ -167,10 +162,10 @@ var codegenTargets = []codegenTarget{
 	},
 }
 
-func codegenTargetByID(id string) (*codegenTarget, bool) {
-	for i := range codegenTargets {
-		if codegenTargets[i].ID == id {
-			return &codegenTargets[i], true
+func TargetByID(id string) (*Target, bool) {
+	for i := range Targets {
+		if Targets[i].ID == id {
+			return &Targets[i], true
 		}
 	}
 	return nil, false
@@ -185,8 +180,8 @@ var (
 )
 
 // validate checks the spec and returns the origin's port.
-func (s *codegenSpec) validate() (string, error) {
-	if _, ok := codegenTargetByID(s.Language); !ok {
+func (s *Spec) Validate() (string, error) {
+	if _, ok := TargetByID(s.Language); !ok {
 		return "", fmt.Errorf("unknown language %q", s.Language)
 	}
 	check := func(name, v string, allowed []string) error {
@@ -238,17 +233,17 @@ func (s *codegenSpec) validate() (string, error) {
 	return port, nil
 }
 
-// codegenNote is a lint finding or library note shown with the code.
-type codegenNote struct {
+// Note is a lint finding or library note shown with the code.
+type Note struct {
 	Level string `json:"level"` // "warn" or "info"
 	Text  string `json:"text"`
 }
 
 // lint flags option combinations that tend to surprise developers.
-func (s codegenSpec) lint() []codegenNote {
-	var out []codegenNote
-	warn := func(t string) { out = append(out, codegenNote{"warn", t}) }
-	info := func(t string) { out = append(out, codegenNote{"info", t}) }
+func (s Spec) Lint() []Note {
+	var out []Note
+	warn := func(t string) { out = append(out, Note{"warn", t}) }
+	info := func(t string) { out = append(out, Note{"info", t}) }
 
 	if s.ResidentKey == "discouraged" {
 		warn("With residentKey discouraged, authenticators may create non-discoverable credentials. Sign-in without a username and autofill (conditional UI) won't find them; users must type their username.")
@@ -286,32 +281,32 @@ func (s codegenSpec) lint() []codegenNote {
 	return out
 }
 
-// codegenFile is one generated file.
-type codegenFile struct {
+// File is one generated file.
+type File struct {
 	Path     string `json:"path"`
 	Language string `json:"language"` // for syntax labels in the UI
 	Content  string `json:"content"`
 }
 
-type codegenResult struct {
-	Spec   codegenSpec    `json:"spec"`
-	Target *codegenTarget `json:"target"`
-	Files  []codegenFile  `json:"files"`
-	Notes  []codegenNote  `json:"notes"`
+type Result struct {
+	Spec   Spec    `json:"spec"`
+	Target *Target `json:"target"`
+	Files  []File  `json:"files"`
+	Notes  []Note  `json:"notes"`
 }
 
-// codegenData is what the templates see.
-type codegenData struct {
-	codegenSpec
+// templateData is what the templates see.
+type templateData struct {
+	Spec
 	Port         string
 	Secure       bool
-	Target       *codegenTarget
+	Target       *Target
 	Versions     map[string]string
 	PRFSalt      string
 	Discoverable bool
 }
 
-var codegenFuncs = template.FuncMap{
+var funcs = template.FuncMap{
 	"json": func(v any) (string, error) {
 		b, err := json.Marshal(v)
 		return string(b), err
@@ -338,18 +333,18 @@ var codegenFuncs = template.FuncMap{
 	},
 }
 
-// generateCode renders the shared files and the target's files.
-func generateCode(spec codegenSpec) (*codegenResult, error) {
-	port, err := spec.validate()
+// Generate renders the shared files and the target's files.
+func Generate(spec Spec) (*Result, error) {
+	port, err := spec.Validate()
 	if err != nil {
 		return nil, err
 	}
-	target, _ := codegenTargetByID(spec.Language)
-	data := codegenData{
-		codegenSpec: spec,
-		Port:        port,
-		Secure:      strings.HasPrefix(spec.Origin, "https://"),
-		Target:      target,
+	target, _ := TargetByID(spec.Language)
+	data := templateData{
+		Spec:   spec,
+		Port:   port,
+		Secure: strings.HasPrefix(spec.Origin, "https://"),
+		Target: target,
 		Versions: map[string]string{
 			"goWebAuthn": goWebAuthnVersion, "goSQLite": goSQLiteVersion, "go": codegenGoMinVersion,
 			"simpleWebAuthn": simpleWebAuthnVer, "express": expressVersion, "node": codegenNodeMinimum,
@@ -361,20 +356,20 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 		Discoverable: spec.ResidentKey != "discouraged",
 	}
 
-	res := &codegenResult{Spec: spec, Target: target, Notes: spec.lint()}
+	res := &Result{Spec: spec, Target: target, Notes: spec.Lint()}
 	for _, n := range target.unsupported(spec) {
-		res.Notes = append(res.Notes, codegenNote{"info", n})
+		res.Notes = append(res.Notes, Note{"info", n})
 	}
-	for _, dir := range []string{"codegen/common", "codegen/" + target.ID} {
-		err := fs.WalkDir(codegenFS, dir, func(p string, d fs.DirEntry, err error) error {
+	for _, dir := range []string{"templates/common", "templates/" + target.ID} {
+		err := fs.WalkDir(templateFS, dir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
 			}
-			src, err := codegenFS.ReadFile(p)
+			src, err := templateFS.ReadFile(p)
 			if err != nil {
 				return err
 			}
-			tmpl, err := template.New(p).Funcs(codegenFuncs).Parse(string(src))
+			tmpl, err := template.New(p).Funcs(funcs).Parse(string(src))
 			if err != nil {
 				return fmt.Errorf("template %s: %w", p, err)
 			}
@@ -391,7 +386,7 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 				}
 				content = string(formatted)
 			}
-			res.Files = append(res.Files, codegenFile{Path: rel, Language: fileLanguage(rel), Content: content})
+			res.Files = append(res.Files, File{Path: rel, Language: fileLanguage(rel), Content: content})
 			return nil
 		})
 		if err != nil {
@@ -399,7 +394,7 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 		}
 	}
 	// Server code first, then the client, then supporting files.
-	order := func(f codegenFile) int {
+	order := func(f File) int {
 		switch {
 		case f.Path == "main.go" || f.Path == "server.js" || f.Path == "server.py" || strings.HasSuffix(f.Path, "Controller.java") || f.Path == "Program.cs":
 			return 0
@@ -416,7 +411,7 @@ func generateCode(spec codegenSpec) (*codegenResult, error) {
 		}
 		return 4
 	}
-	slices.SortStableFunc(res.Files, func(a, b codegenFile) int { return order(a) - order(b) })
+	slices.SortStableFunc(res.Files, func(a, b File) int { return order(a) - order(b) })
 	return res, nil
 }
 
@@ -474,7 +469,7 @@ func tidyBlankLines(s string) string {
 }
 
 // writeZip writes the generated files into a zip archive under dir/.
-func (r *codegenResult) writeZip(w io.Writer, dir string) error {
+func (r *Result) WriteZip(w io.Writer, dir string) error {
 	zw := zip.NewWriter(w)
 	for _, f := range r.Files {
 		fw, err := zw.Create(dir + "/" + f.Path)
@@ -486,107 +481,4 @@ func (r *codegenResult) writeZip(w io.Writer, dir string) error {
 		}
 	}
 	return zw.Close()
-}
-
-// ---------- CLI ----------
-
-func cmdCodegen(args []string) error {
-	fs := flag.NewFlagSet("codegen", flag.ExitOnError)
-	lang := fs.String("lang", "go", "server language: "+codegenLanguageList())
-	specJSON := fs.String("spec", "", `options as JSON, merged over the defaults, e.g. '{"residentKey":"preferred","prf":true}'`)
-	out := fs.String("out", "", "directory to write the project to (must not exist or be empty)")
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: passkeytool codegen -lang LANG -out DIR [-spec JSON]
-
-Generate a complete passkey app: a server, a browser client, and a SQL
-schema. Without -out, prints the files to stdout.
-
-Default options:
-`)
-		b, _ := json.MarshalIndent(defaultCodegenSpec(), "  ", "  ")
-		fmt.Fprintf(os.Stderr, "  %s\n\nFlags:\n", b)
-		fs.PrintDefaults()
-	}
-	_ = fs.Parse(args)
-
-	spec := defaultCodegenSpec()
-	if *specJSON != "" {
-		dec := json.NewDecoder(strings.NewReader(*specJSON))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&spec); err != nil {
-			return fmt.Errorf("-spec: %w", err)
-		}
-	}
-	spec.Language = *lang
-	res, err := generateCode(spec)
-	if err != nil {
-		return err
-	}
-	for _, n := range res.Notes {
-		fmt.Fprintf(os.Stderr, "%s: %s\n", n.Level, n.Text)
-	}
-	if *out == "" {
-		for _, f := range res.Files {
-			fmt.Printf("==> %s <==\n%s\n", f.Path, f.Content)
-		}
-		return nil
-	}
-	if entries, err := os.ReadDir(*out); err == nil && len(entries) > 0 {
-		return fmt.Errorf("%s is not empty", *out)
-	}
-	for _, f := range res.Files {
-		p := filepath.Join(*out, filepath.FromSlash(f.Path))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(p, []byte(f.Content), 0o644); err != nil {
-			return err
-		}
-	}
-	fmt.Printf("wrote %d files to %s; run:\n  cd %s\n", len(res.Files), *out, *out)
-	for _, c := range res.Target.Run {
-		fmt.Printf("  %s\n", c)
-	}
-	return nil
-}
-
-func codegenLanguageList() string {
-	var ids []string
-	for _, t := range codegenTargets {
-		ids = append(ids, t.ID)
-	}
-	return strings.Join(ids, ", ")
-}
-
-// ---------- HTTP ----------
-
-func (s *Server) handleCodegenTargets(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"targets": codegenTargets, "defaults": defaultCodegenSpec()})
-}
-
-// handleCodegen returns the generated files as JSON, or as a zip with
-// ?format=zip.
-func (s *Server) handleCodegen(w http.ResponseWriter, r *http.Request) {
-	spec := defaultCodegenSpec()
-	dec := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&spec); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	res, err := generateCode(spec)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if r.URL.Query().Get("format") != "zip" {
-		writeJSON(w, http.StatusOK, res)
-		return
-	}
-	name := "passkeys-" + spec.Language
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.zip"`)
-	if err := res.writeZip(w, name); err != nil {
-		log.Printf("codegen zip: %v", err)
-	}
 }

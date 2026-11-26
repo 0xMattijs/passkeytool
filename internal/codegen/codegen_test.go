@@ -1,4 +1,4 @@
-package main
+package codegen
 
 import (
 	"os"
@@ -10,8 +10,8 @@ import (
 
 // codegenCombos returns every combination of the options that change the
 // generated code's structure.
-func codegenCombos(lang string) []codegenSpec {
-	var out []codegenSpec
+func codegenCombos(lang string) []Spec {
+	var out []Spec
 	hintSets := [][]string{nil, {"security-key"}, {"client-device", "hybrid"}}
 	for _, rk := range validResidentKey {
 		for _, uv := range validUV {
@@ -19,7 +19,7 @@ func codegenCombos(lang string) []codegenSpec {
 				for _, attest := range validAttestation {
 					for _, hints := range hintSets {
 						for _, flags := range []int{0, 1, 2, 3} {
-							s := defaultCodegenSpec()
+							s := DefaultSpec()
 							s.Language, s.ResidentKey, s.UserVerification, s.Attachment, s.Attestation, s.Hints = lang, rk, uv, att, attest, hints
 							s.PRF = flags&1 != 0
 							s.ConditionalUI = flags&2 != 0
@@ -36,10 +36,10 @@ func codegenCombos(lang string) []codegenSpec {
 }
 
 func TestCodegenAllCombinations(t *testing.T) {
-	for _, target := range codegenTargets {
+	for _, target := range Targets {
 		n := 0
 		for _, spec := range codegenCombos(target.ID) {
-			res, err := generateCode(spec)
+			res, err := Generate(spec)
 			if err != nil {
 				t.Fatalf("%s %+v: %v", target.ID, spec, err)
 			}
@@ -68,10 +68,10 @@ func TestCodegenScriptsParse(t *testing.T) {
 	if len(checkers) == 0 {
 		t.Skip("neither node nor python3 installed")
 	}
-	for _, target := range codegenTargets {
+	for _, target := range Targets {
 		combos := codegenCombos(target.ID)
 		for i := 0; i < len(combos); i += 97 {
-			res, err := generateCode(combos[i])
+			res, err := Generate(combos[i])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,26 +99,26 @@ func TestCodegenScriptsParse(t *testing.T) {
 }
 
 func TestCodegenValidation(t *testing.T) {
-	bad := []func(*codegenSpec){
-		func(s *codegenSpec) { s.Language = "cobol" },
-		func(s *codegenSpec) { s.ResidentKey = "always" },
-		func(s *codegenSpec) { s.Hints = []string{"usb"} },
-		func(s *codegenSpec) { s.Hints = []string{"hybrid", "hybrid"} },
-		func(s *codegenSpec) { s.Origin = "http://example.com" },
-		func(s *codegenSpec) { s.Origin = "https://example.com"; s.RPID = "other.com" },
-		func(s *codegenSpec) { s.Origin = "https://example.com/path" },
-		func(s *codegenSpec) { s.RPName = " " },
+	bad := []func(*Spec){
+		func(s *Spec) { s.Language = "cobol" },
+		func(s *Spec) { s.ResidentKey = "always" },
+		func(s *Spec) { s.Hints = []string{"usb"} },
+		func(s *Spec) { s.Hints = []string{"hybrid", "hybrid"} },
+		func(s *Spec) { s.Origin = "http://example.com" },
+		func(s *Spec) { s.Origin = "https://example.com"; s.RPID = "other.com" },
+		func(s *Spec) { s.Origin = "https://example.com/path" },
+		func(s *Spec) { s.RPName = " " },
 	}
 	for i, mutate := range bad {
-		s := defaultCodegenSpec()
+		s := DefaultSpec()
 		mutate(&s)
-		if _, err := generateCode(s); err == nil {
+		if _, err := Generate(s); err == nil {
 			t.Errorf("case %d: invalid spec accepted: %+v", i, s)
 		}
 	}
-	s := defaultCodegenSpec()
+	s := DefaultSpec()
 	s.Origin, s.RPID = "https://login.example.com", "example.com"
-	if _, err := generateCode(s); err != nil {
+	if _, err := Generate(s); err != nil {
 		t.Errorf("parent-domain RP ID rejected: %v", err)
 	}
 }

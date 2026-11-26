@@ -1,4 +1,4 @@
-package main
+package attestation
 
 import (
 	"crypto/ecdsa"
@@ -41,7 +41,7 @@ func TestSummarizeAttestation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := summarizeAttestation(raw)
+	s := Summarize(raw)
 	if s == nil || s.Error != "" {
 		t.Fatalf("summary: %+v", s)
 	}
@@ -53,10 +53,10 @@ func TestSummarizeAttestation(t *testing.T) {
 		t.Errorf("unexpected cert: %+v", c)
 	}
 
-	if summarizeAttestation(nil) != nil {
+	if Summarize(nil) != nil {
 		t.Error("empty object should give nil")
 	}
-	if s := summarizeAttestation([]byte{0xff}); s == nil || s.Error == "" {
+	if s := Summarize([]byte{0xff}); s == nil || s.Error == "" {
 		t.Error("garbage should report an error")
 	}
 }

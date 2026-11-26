@@ -1,4 +1,4 @@
-package main
+package ctap
 
 import (
 	"bytes"
@@ -26,22 +26,22 @@ const (
 	broadcastCID = 0xffffffff
 )
 
-// hidTransport sends and receives raw 64-byte HID reports.
-type hidTransport interface {
+// Transport sends and receives raw 64-byte HID reports.
+type Transport interface {
 	writeReport(report []byte) error
 	readReport(timeout time.Duration) ([]byte, error)
 	Close() error
 }
 
-// ctapDevice is an open CTAPHID channel to one authenticator.
-type ctapDevice struct {
-	t       hidTransport
+// Device is an open CTAPHID channel to one authenticator.
+type Device struct {
+	t       Transport
 	cid     uint32
 	timeout time.Duration
 }
 
-func newCTAPDevice(t hidTransport) (*ctapDevice, error) {
-	d := &ctapDevice{t: t, cid: broadcastCID, timeout: 5 * time.Second}
+func NewDevice(t Transport) (*Device, error) {
+	d := &Device{t: t, cid: broadcastCID, timeout: 5 * time.Second}
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
@@ -63,9 +63,9 @@ func newCTAPDevice(t hidTransport) (*ctapDevice, error) {
 	}
 }
 
-func (d *ctapDevice) Close() error { return d.t.Close() }
+func (d *Device) Close() error { return d.t.Close() }
 
-func (d *ctapDevice) send(cmd byte, data []byte) error {
+func (d *Device) send(cmd byte, data []byte) error {
 	if len(data) > hidInitPayload+0x80*hidContPayload {
 		return errors.New("CTAPHID message too long")
 	}
@@ -91,7 +91,7 @@ func (d *ctapDevice) send(cmd byte, data []byte) error {
 
 // recv reads one complete message on this channel, skipping keepalives and
 // reports for other channels.
-func (d *ctapDevice) recv() (byte, []byte, error) {
+func (d *Device) recv() (byte, []byte, error) {
 	for {
 		pkt, err := d.t.readReport(d.timeout)
 		if err != nil {
@@ -132,7 +132,7 @@ func (d *ctapDevice) recv() (byte, []byte, error) {
 	}
 }
 
-func (d *ctapDevice) transact(cmd byte, data []byte) ([]byte, error) {
+func (d *Device) transact(cmd byte, data []byte) ([]byte, error) {
 	if err := d.send(cmd, data); err != nil {
 		return nil, err
 	}

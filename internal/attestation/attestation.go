@@ -1,4 +1,4 @@
-package main
+package attestation
 
 import (
 	"crypto/sha256"
@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"github.com/0xMattijs/passkeytool/internal/aaguid"
 	"sort"
 	"strings"
 	"time"
@@ -17,16 +18,16 @@ import (
 
 var oidFIDOAAGUID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 45724, 1, 1, 4}
 
-type attestationSummary struct {
+type Summary struct {
 	Format        string     `json:"format"`
 	StatementKeys []string   `json:"statementKeys"`
 	Algorithm     string     `json:"algorithm,omitempty"`
 	Kind          string     `json:"kind"`
-	Certificates  []certInfo `json:"certificates,omitempty"`
+	Certificates  []CertInfo `json:"certificates,omitempty"`
 	Error         string     `json:"error,omitempty"`
 }
 
-type certInfo struct {
+type CertInfo struct {
 	Subject            string    `json:"subject"`
 	Issuer             string    `json:"issuer"`
 	Serial             string    `json:"serial"`
@@ -40,24 +41,24 @@ type certInfo struct {
 	PEM                string    `json:"pem"`
 }
 
-// coseAlgorithms names the COSE algorithm identifiers seen in practice.
-var coseAlgorithms = map[int64]string{
+// COSEAlgorithms names the COSE algorithm identifiers seen in practice.
+var COSEAlgorithms = map[int64]string{
 	-7: "ES256", -8: "EdDSA", -35: "ES384", -36: "ES512",
 	-37: "PS256", -38: "PS384", -39: "PS512",
 	-257: "RS256", -258: "RS384", -259: "RS512", -65535: "RS1",
 }
 
-// summarizeAttestation decodes a raw attestation object for display. It
+// Summarize decodes a raw attestation object for display. It
 // doesn't verify anything; the library already did that at registration.
-func summarizeAttestation(raw []byte) *attestationSummary {
+func Summarize(raw []byte) *Summary {
 	if len(raw) == 0 {
 		return nil
 	}
 	var ao protocol.AttestationObject
 	if err := webauthncbor.Unmarshal(raw, &ao); err != nil {
-		return &attestationSummary{Error: fmt.Sprintf("decode attestation object: %v", err)}
+		return &Summary{Error: fmt.Sprintf("decode attestation object: %v", err)}
 	}
-	s := &attestationSummary{Format: ao.Format}
+	s := &Summary{Format: ao.Format}
 	for k := range ao.AttStatement {
 		s.StatementKeys = append(s.StatementKeys, k)
 	}
@@ -65,7 +66,7 @@ func summarizeAttestation(raw []byte) *attestationSummary {
 
 	if alg, ok := ao.AttStatement["alg"].(int64); ok {
 		s.Algorithm = fmt.Sprintf("%d", alg)
-		if name, ok := coseAlgorithms[alg]; ok {
+		if name, ok := COSEAlgorithms[alg]; ok {
 			s.Algorithm = fmt.Sprintf("%s (%d)", name, alg)
 		}
 	}
@@ -92,9 +93,9 @@ func summarizeAttestation(raw []byte) *attestationSummary {
 	return s
 }
 
-func describeCert(der []byte) certInfo {
+func describeCert(der []byte) CertInfo {
 	sum := sha256.Sum256(der)
-	ci := certInfo{
+	ci := CertInfo{
 		SHA256: hex.EncodeToString(sum[:]),
 		PEM:    string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 	}
@@ -115,7 +116,7 @@ func describeCert(der []byte) certInfo {
 		if ext.Id.Equal(oidFIDOAAGUID) {
 			var v []byte
 			if _, err := asn1.Unmarshal(ext.Value, &v); err == nil && len(v) == 16 {
-				ci.AAGUID = formatAAGUID(v)
+				ci.AAGUID = aaguid.Format(v)
 			}
 		}
 	}

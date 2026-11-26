@@ -30,6 +30,19 @@ npx playwright install chromium
 npm test -- go node   # or leave out the languages to run all five
 ```
 
+## Project layout
+
+| Path | Contents |
+|------|----------|
+| `*.go` (root) | The `passkeytool` command: one `cmd_*.go` file per command |
+| `internal/server/` | The `serve` web app and WebAuthn API, with its page in `web/` |
+| `internal/codegen/` | The code generator, with its templates in `templates/` |
+| `internal/ctap/` | CTAP2 over USB HID, used by the `key` command |
+| `internal/store/` | The JSON data file with accounts and passkeys |
+| `internal/aaguid/` | Authenticator names from the AAGUID list |
+| `internal/attestation/` | Attestation statement summaries |
+| `e2e/` | End-to-end tests of the generated apps |
+
 ## Make a change
 
 1. Fork the repository and create a branch from `master`.
@@ -43,17 +56,19 @@ npm test -- go node   # or leave out the languages to run all five
 ### Code generator changes
 
 All generated apps implement the same HTTP API and share the same client
-(`codegen/common/public/`). A change to one language usually applies to all
-of them.
+(`internal/codegen/templates/common/public/`). A change to one language
+usually applies to all of them.
 
 - Keep the generated apps behaviorally identical. If a library can't support
   an option, add a note to that target's `unsupported` function in
-  `codegen.go` rather than silently dropping the option.
-- Pin exact library versions in the version constants in `codegen.go`.
+  `internal/codegen/codegen.go` rather than silently dropping the option.
+- Pin exact library versions in the version constants in
+  `internal/codegen/codegen.go`.
 - Make sure `npm test` in `e2e/` passes for every language you touched.
-- A new language needs templates under `codegen/<lang>/`, an entry in
-  `codegenTargets`, build and start commands in `e2e/run.mjs`, a matrix entry
-  in `.github/workflows/ci.yml`, and a row in the README language table.
+- A new language needs templates under `internal/codegen/templates/<lang>/`,
+  an entry in `codegen.Targets`, build and start commands in `e2e/run.mjs`, a
+  matrix entry in `.github/workflows/ci.yml`, and a row in the README
+  language table.
 
 ## Review and merge
 

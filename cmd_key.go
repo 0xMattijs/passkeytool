@@ -5,6 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/0xMattijs/passkeytool/internal/aaguid"
+	"github.com/0xMattijs/passkeytool/internal/attestation"
+	"github.com/0xMattijs/passkeytool/internal/ctap"
+	"github.com/0xMattijs/passkeytool/internal/store"
 	"io"
 	"os"
 	"slices"
@@ -74,7 +78,7 @@ func deviceFlag(fs *flag.FlagSet) *string {
 func cmdKeyDevices(args []string) error {
 	fs := flag.NewFlagSet("key devices", flag.ExitOnError)
 	_ = fs.Parse(args)
-	devs, err := findFIDODevices()
+	devs, err := ctap.FindDevices()
 	if err != nil {
 		return err
 	}
@@ -91,9 +95,9 @@ func cmdKeyDevices(args []string) error {
 }
 
 // openKey opens the given device, or the only connected FIDO key.
-func openKey(path string) (*ctapDevice, hidDeviceInfo, error) {
-	var info hidDeviceInfo
-	devs, err := findFIDODevices()
+func openKey(path string) (*ctap.Device, ctap.DeviceInfo, error) {
+	var info ctap.DeviceInfo
+	devs, err := ctap.FindDevices()
 	if err != nil {
 		return nil, info, err
 	}
@@ -111,18 +115,18 @@ func openKey(path string) (*ctapDevice, hidDeviceInfo, error) {
 			return nil, info, fmt.Errorf("several keys connected, choose one with -device: %s", strings.Join(paths, ", "))
 		}
 	} else {
-		info = hidDeviceInfo{Path: path}
+		info = ctap.DeviceInfo{Path: path}
 		for _, d := range devs {
 			if d.Path == path {
 				info = d
 			}
 		}
 	}
-	t, err := openHID(info.Path)
+	t, err := ctap.OpenHID(info.Path)
 	if err != nil {
 		return nil, info, err
 	}
-	d, err := newCTAPDevice(t)
+	d, err := ctap.NewDevice(t)
 	if err != nil {
 		t.Close()
 		return nil, info, fmt.Errorf("%s: %w", info.Path, err)
@@ -130,8 +134,8 @@ func openKey(path string) (*ctapDevice, hidDeviceInfo, error) {
 	return d, info, nil
 }
 
-func keyLabel(dev hidDeviceInfo, info *authenticatorInfo) string {
-	name := aaguidName(info.AAGUID)
+func keyLabel(dev ctap.DeviceInfo, info *ctap.Info) string {
+	name := aaguid.Name(info.AAGUID)
 	if name == "" {
 		name = orDefault(dev.Name, "security key")
 	}
@@ -148,11 +152,11 @@ func cmdKeyInfo(args []string) error {
 		return err
 	}
 	defer d.Close()
-	info, err := d.getInfo()
+	info, err := d.GetInfo()
 	if err != nil {
 		return err
 	}
-	_, _ = loadAAGUIDs(defaultAAGUIDPath())
+	_, _ = aaguid.Load(aaguid.DefaultPath())
 
 	var opts []string
 	for k, v := range info.Options {
@@ -161,7 +165,7 @@ func cmdKeyInfo(args []string) error {
 	slices.Sort(opts)
 	var algs []string
 	for _, a := range info.Algorithms {
-		name := coseAlgorithms[a.Alg]
+		name := attestation.COSEAlgorithms[a.Alg]
 		if name == "" {
 			name = fmt.Sprint(a.Alg)
 		}
@@ -172,7 +176,7 @@ func cmdKeyInfo(args []string) error {
 	fmt.Fprintf(tw, "device\t%s\n", dev.Path)
 	fmt.Fprintf(tw, "name\t%s\n", orDefault(dev.Name, "-"))
 	fmt.Fprintf(tw, "usb id\t%s\n", orDefault(dev.USBID, "-"))
-	fmt.Fprintf(tw, "aaguid\t%s %s\n", formatAAGUID(info.AAGUID), aaguidName(info.AAGUID))
+	fmt.Fprintf(tw, "aaguid\t%s %s\n", aaguid.Format(info.AAGUID), aaguid.Name(info.AAGUID))
 	fmt.Fprintf(tw, "versions\t%s\n", strings.Join(info.Versions, " "))
 	fmt.Fprintf(tw, "extensions\t%s\n", orDefault(strings.Join(info.Extensions, " "), "-"))
 	fmt.Fprintf(tw, "options\t%s\n", strings.Join(opts, " "))
@@ -190,15 +194,15 @@ func cmdKeyInfo(args []string) error {
 		fmt.Fprintf(tw, "free passkey slots\t%d\n", *info.RemainingDiscoverable)
 	}
 	if info.Options["clientPin"] {
-		if n, err := d.pinRetries(); err == nil {
+		if n, err := d.PINRetries(); err == nil {
 			fmt.Fprintf(tw, "PIN retries left\t%d\n", n)
 		}
 	}
 	cm := "not supported"
-	switch info.credMgmtCommand() {
-	case ctapCredMgmt:
+	switch info.CredMgmtCommand() {
+	case ctap.CmdCredMgmt:
 		cm = "supported"
-	case ctapCredMgmtPreview:
+	case ctap.CmdCredMgmtPreview:
 		cm = "supported (CTAP 2.1 preview)"
 	}
 	fmt.Fprintf(tw, "credential management\t%s\n", cm)
@@ -222,19 +226,19 @@ func readPIN(prompt string) (string, error) {
 }
 
 // openCredManager opens the key and authenticates with its PIN.
-func openCredManager(device string) (*ctapDevice, *credManager, string, error) {
+func openCredManager(device string) (*ctap.Device, *ctap.CredManager, string, error) {
 	d, dev, err := openKey(device)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	info, err := d.getInfo()
+	info, err := d.GetInfo()
 	if err != nil {
 		d.Close()
 		return nil, nil, "", err
 	}
-	_, _ = loadAAGUIDs(defaultAAGUIDPath())
+	_, _ = aaguid.Load(aaguid.DefaultPath())
 	label := keyLabel(dev, info)
-	cmd := info.credMgmtCommand()
+	cmd := info.CredMgmtCommand()
 	if cmd == 0 {
 		d.Close()
 		return nil, nil, "", fmt.Errorf("%s doesn't support credential management (it needs CTAP 2.1)", label)
@@ -252,12 +256,12 @@ func openCredManager(device string) (*ctapDevice, *credManager, string, error) {
 		d.Close()
 		return nil, nil, "", err
 	}
-	token, err := d.getPinToken(info, pin)
+	token, err := d.GetPINToken(info, pin)
 	if err != nil {
 		d.Close()
 		return nil, nil, "", err
 	}
-	return d, &credManager{d: d, cmd: cmd, token: token}, label, nil
+	return d, ctap.NewCredManager(d, cmd, token), label, nil
 }
 
 func cmdKeyList(args []string) error {
@@ -273,17 +277,17 @@ func cmdKeyList(args []string) error {
 	}
 	defer d.Close()
 
-	var rps []keyRPEntry
+	var rps []ctap.RPEntry
 	if *rpFlag != "" {
-		rps = []keyRPEntry{{RP: keyRP{ID: *rpFlag}, IDHash: rpIDHash(*rpFlag)}}
-	} else if rps, err = m.relyingParties(); err != nil {
+		rps = []ctap.RPEntry{{RP: ctap.RP{ID: *rpFlag}, IDHash: ctap.RPIDHash(*rpFlag)}}
+	} else if rps, err = m.RelyingParties(); err != nil {
 		return fmt.Errorf("list relying parties: %w", err)
 	}
 
-	var server *storeData
-	_ = NewStore(*data).View(func(sd *storeData) error { server = sd; return nil })
+	var saved *store.Data
+	_ = store.New(*data).View(func(sd *store.Data) error { saved = sd; return nil })
 
-	existing, remaining, err := m.metadata()
+	existing, remaining, err := m.Metadata()
 	if err == nil {
 		fmt.Printf("%s: %d passkeys stored, room for %d more\n\n", label, existing, remaining)
 	} else {
@@ -294,17 +298,17 @@ func cmdKeyList(args []string) error {
 	fmt.Fprintln(tw, "RP ID\tUSER\tCREDENTIAL ID\tPROTECTION\tON SERVER")
 	n := 0
 	for _, rp := range rps {
-		creds, err := m.credentials(rp.IDHash)
+		creds, err := m.Credentials(rp.IDHash)
 		if err != nil {
-			return fmt.Errorf("list passkeys for %s: %w", orDefault(rp.RP.ID, b64(rp.IDHash)), err)
+			return fmt.Errorf("list passkeys for %s: %w", orDefault(rp.RP.ID, store.EncodeID(rp.IDHash)), err)
 		}
 		for _, c := range creds {
 			n++
-			user := orDefault(c.User.Name, b64(c.User.ID))
+			user := orDefault(c.User.Name, store.EncodeID(c.User.ID))
 			if c.User.DisplayName != "" && c.User.DisplayName != c.User.Name {
 				user += " (" + c.User.DisplayName + ")"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", orDefault(rp.RP.ID, "sha256:"+b64(rp.IDHash)), user, b64(c.ID), credProtectName(c.CredProtect), serverStatus(server, c))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", orDefault(rp.RP.ID, "sha256:"+store.EncodeID(rp.IDHash)), user, store.EncodeID(c.ID), ctap.CredProtectName(c.CredProtect), serverStatus(saved, c))
 		}
 	}
 	if n == 0 {
@@ -323,28 +327,15 @@ func cmdKeyList(args []string) error {
 	return nil
 }
 
-// credProtectName describes a credProtect level (CTAP 2.1 §12.1).
-func credProtectName(level uint) string {
-	switch level {
-	case 1:
-		return "UV optional"
-	case 2:
-		return "UV or ID list"
-	case 3:
-		return "UV required"
-	}
-	return "-"
-}
-
 // serverStatus says whether the server's data file knows a credential.
-func serverStatus(server *storeData, c keyCredential) string {
-	if server == nil {
+func serverStatus(saved *store.Data, c ctap.Credential) string {
+	if saved == nil {
 		return "?"
 	}
-	if u, _ := server.credential(c.ID); u != nil {
+	if u, _ := saved.FindCredential(c.ID); u != nil {
 		return "yes (" + u.Name + ")"
 	}
-	if u := server.userByID(c.User.ID); u != nil {
+	if u := saved.UserByID(c.User.ID); u != nil {
 		return "no (account " + u.Name + " exists)"
 	}
 	return "no"
@@ -360,7 +351,7 @@ func cmdKeyDelete(args []string) error {
 	if fs.NArg() != 1 {
 		return errors.New("usage: passkeytool key rm [-device PATH] [-y] [-server] CREDENTIAL_ID")
 	}
-	id, err := decodeB64(fs.Arg(0))
+	id, err := store.DecodeID(fs.Arg(0))
 	if err != nil {
 		return fmt.Errorf("bad credential id: %w", err)
 	}
@@ -371,14 +362,14 @@ func cmdKeyDelete(args []string) error {
 	}
 	defer d.Close()
 
-	rp, cred, err := m.findCredential(id)
+	rp, cred, err := m.FindCredential(id)
 	if err != nil {
 		return err
 	}
 	if cred == nil {
-		return fmt.Errorf("passkey %s isn't on %s; it may be stored in a password manager instead", b64(id), label)
+		return fmt.Errorf("passkey %s isn't on %s; it may be stored in a password manager instead", store.EncodeID(id), label)
 	}
-	desc := fmt.Sprintf("the passkey for %s at %s", orDefault(cred.User.Name, b64(cred.User.ID)), orDefault(rp.RP.ID, "sha256:"+b64(rp.IDHash)))
+	desc := fmt.Sprintf("the passkey for %s at %s", orDefault(cred.User.Name, store.EncodeID(cred.User.ID)), orDefault(rp.RP.ID, "sha256:"+store.EncodeID(rp.IDHash)))
 	if !*yes {
 		fmt.Printf("Delete %s from %s? This can't be undone. [y/N] ", desc, label)
 		answer, _ := stdin.ReadString('\n')
@@ -387,32 +378,32 @@ func cmdKeyDelete(args []string) error {
 			return errors.New("aborted")
 		}
 	}
-	if err := m.deleteCredential(id); err != nil {
+	if err := m.DeleteCredential(id); err != nil {
 		return fmt.Errorf("delete: %w", err)
 	}
 	fmt.Printf("deleted %s from the key\n", desc)
 
-	store := NewStore(*data)
+	st := store.New(*data)
 	if !*alsoServer {
 		var owner string
-		_ = store.View(func(d *storeData) error {
-			if u, _ := d.credential(id); u != nil {
+		_ = st.View(func(d *store.Data) error {
+			if u, _ := d.FindCredential(id); u != nil {
 				owner = u.Name
 			}
 			return nil
 		})
 		if owner != "" {
-			fmt.Printf("the server still lists it for %s; remove it with: passkeytool delete-credential %s\n", owner, b64(id))
+			fmt.Printf("the server still lists it for %s; remove it with: passkeytool delete-credential %s\n", owner, store.EncodeID(id))
 		}
 		return nil
 	}
-	return store.Update(func(d *storeData) error {
-		u, _ := d.credential(id)
+	return st.Update(func(d *store.Data) error {
+		u, _ := d.FindCredential(id)
 		if u == nil {
 			fmt.Printf("%s has no record of it\n", *data)
 			return nil
 		}
-		u.deleteCredential(id)
+		u.DeleteCredential(id)
 		fmt.Printf("deleted it from user %q in %s\n", u.Name, *data)
 		return nil
 	})
@@ -428,11 +419,11 @@ func cmdKeyPIN(args []string) error {
 		return err
 	}
 	defer d.Close()
-	info, err := d.getInfo()
+	info, err := d.GetInfo()
 	if err != nil {
 		return err
 	}
-	_, _ = loadAAGUIDs(defaultAAGUIDPath())
+	_, _ = aaguid.Load(aaguid.DefaultPath())
 	label := keyLabel(dev, info)
 	if _, ok := info.Options["clientPin"]; !ok {
 		return fmt.Errorf("%s doesn't support a PIN", label)
@@ -448,7 +439,7 @@ func cmdKeyPIN(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkNewPIN(newPIN, info.MinPINLength); err != nil {
+	if err := ctap.CheckNewPIN(newPIN, info.MinPINLength); err != nil {
 		return err
 	}
 	again, err := readPIN("new PIN again")
@@ -458,7 +449,7 @@ func cmdKeyPIN(args []string) error {
 	if again != newPIN {
 		return errors.New("the PINs don't match")
 	}
-	if err := d.setPIN(info, oldPIN, newPIN); err != nil {
+	if err := d.SetPIN(info, oldPIN, newPIN); err != nil {
 		return err
 	}
 	if oldPIN == "" {
@@ -480,12 +471,12 @@ func cmdKeyReset(args []string) error {
 	if err != nil {
 		return err
 	}
-	info, err := d.getInfo()
+	info, err := d.GetInfo()
 	d.Close()
 	if err != nil {
 		return err
 	}
-	_, _ = loadAAGUIDs(defaultAAGUIDPath())
+	_, _ = aaguid.Load(aaguid.DefaultPath())
 	label := keyLabel(dev, info)
 
 	fmt.Printf(`This erases every passkey on %s and clears its PIN.
@@ -514,7 +505,7 @@ aren't affected.
 	}
 	defer d.Close()
 	fmt.Println("Touch the key to confirm the reset.")
-	if err := d.reset(); err != nil {
+	if err := d.Reset(); err != nil {
 		if *noReplug {
 			return fmt.Errorf("%w; run the command again without -no-replug", err)
 		}
@@ -526,15 +517,15 @@ aren't affected.
 
 // waitForReplug waits for the key to disappear and come back, matching it
 // by USB ID because its device path may change.
-func waitForReplug(dev hidDeviceInfo, timeout time.Duration) (hidDeviceInfo, error) {
+func waitForReplug(dev ctap.DeviceInfo, timeout time.Duration) (ctap.DeviceInfo, error) {
 	deadline := time.Now().Add(timeout)
 	fmt.Println("Unplug the key.")
 	for {
-		devs, err := findFIDODevices()
+		devs, err := ctap.FindDevices()
 		if err != nil {
 			return dev, err
 		}
-		if !slices.ContainsFunc(devs, func(d hidDeviceInfo) bool { return d.Path == dev.Path }) {
+		if !slices.ContainsFunc(devs, func(d ctap.DeviceInfo) bool { return d.Path == dev.Path }) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -544,7 +535,7 @@ func waitForReplug(dev hidDeviceInfo, timeout time.Duration) (hidDeviceInfo, err
 	}
 	fmt.Println("Plug it back in.")
 	for {
-		devs, err := findFIDODevices()
+		devs, err := ctap.FindDevices()
 		if err != nil {
 			return dev, err
 		}
@@ -562,12 +553,12 @@ func waitForReplug(dev hidDeviceInfo, timeout time.Duration) (hidDeviceInfo, err
 
 // openReplugged opens a key that just appeared, retrying while udev is
 // still setting the device's permissions.
-func openReplugged(path string) (*ctapDevice, error) {
+func openReplugged(path string) (*ctap.Device, error) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		t, err := openHID(path)
+		t, err := ctap.OpenHID(path)
 		if err == nil {
-			d, err := newCTAPDevice(t)
+			d, err := ctap.NewDevice(t)
 			if err != nil {
 				t.Close()
 				return nil, fmt.Errorf("%s: %w", path, err)

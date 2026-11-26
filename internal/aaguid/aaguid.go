@@ -1,4 +1,4 @@
-package main
+package aaguid
 
 import (
 	"context"
@@ -13,21 +13,24 @@ import (
 	"time"
 )
 
-// aaguidListURL is the community-maintained list of passkey provider AAGUIDs,
+// listURL is the community-maintained list of passkey provider AAGUIDs,
 // combined with entries from the FIDO Metadata Service.
-const aaguidListURL = "https://raw.githubusercontent.com/passkeydeveloper/passkey-authenticator-aaguids/main/combined_aaguid.json"
+// UserAgent identifies the program when it downloads the list.
+var UserAgent = "passkeytool"
 
-type aaguidEntry struct {
+const listURL = "https://raw.githubusercontent.com/passkeydeveloper/passkey-authenticator-aaguids/main/combined_aaguid.json"
+
+type Entry struct {
 	Name      string `json:"name"`
 	IconLight string `json:"icon_light,omitempty"`
 	IconDark  string `json:"icon_dark,omitempty"`
 }
 
-// aaguidDB holds the downloaded list, if loaded.
-var aaguidDB atomic.Pointer[map[string]aaguidEntry]
+// db holds the downloaded list, if loaded.
+var db atomic.Pointer[map[string]Entry]
 
-// builtinAAGUIDs is a small offline fallback used when the list isn't loaded.
-var builtinAAGUIDs = map[string]string{
+// builtin is a small offline fallback used when the list isn't loaded.
+var builtin = map[string]string{
 	"00000000-0000-0000-0000-000000000000": "(none / zeroed)",
 	"ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4": "Google Password Manager",
 	"adce0002-35bc-c60a-648b-0b25f1f05503": "Chrome on Mac",
@@ -46,7 +49,7 @@ var builtinAAGUIDs = map[string]string{
 	"771b48fd-d3d4-4f74-9232-fc157ab0507a": "Edge on Mac",
 }
 
-func formatAAGUID(b []byte) string {
+func Format(b []byte) string {
 	if len(b) != 16 {
 		return hex.EncodeToString(b)
 	}
@@ -54,19 +57,19 @@ func formatAAGUID(b []byte) string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
 }
 
-func lookupAAGUID(b []byte) aaguidEntry {
-	id := formatAAGUID(b)
-	if db := aaguidDB.Load(); db != nil {
+func Lookup(b []byte) Entry {
+	id := Format(b)
+	if db := db.Load(); db != nil {
 		if e, ok := (*db)[id]; ok {
 			return e
 		}
 	}
-	return aaguidEntry{Name: builtinAAGUIDs[id]}
+	return Entry{Name: builtin[id]}
 }
 
-func aaguidName(b []byte) string { return lookupAAGUID(b).Name }
+func Name(b []byte) string { return Lookup(b).Name }
 
-func defaultAAGUIDPath() string {
+func DefaultPath() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		dir = os.TempDir()
@@ -74,43 +77,43 @@ func defaultAAGUIDPath() string {
 	return filepath.Join(dir, "passkeytool", "combined_aaguid.json")
 }
 
-// loadAAGUIDs reads the list from path and makes it the active list.
-func loadAAGUIDs(path string) (int, error) {
+// Load reads the list from path and makes it the active list.
+func Load(path string) (int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
 	}
-	var m map[string]aaguidEntry
+	var m map[string]Entry
 	if err := json.Unmarshal(b, &m); err != nil {
 		return 0, fmt.Errorf("parse %s: %w", path, err)
 	}
-	aaguidDB.Store(&m)
+	db.Store(&m)
 	return len(m), nil
 }
 
-// downloadAAGUIDs fetches the list to path, validating it before replacing
+// Download fetches the list to path, validating it before replacing
 // any existing file.
-func downloadAAGUIDs(ctx context.Context, path string) error {
+func Download(ctx context.Context, path string) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, aaguidListURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "passkeytool/"+version)
+	req.Header.Set("User-Agent", UserAgent)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", aaguidListURL, res.Status)
+		return fmt.Errorf("GET %s: %s", listURL, res.Status)
 	}
 	b, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
 	if err != nil {
 		return err
 	}
-	var m map[string]aaguidEntry
+	var m map[string]Entry
 	if err := json.Unmarshal(b, &m); err != nil || len(m) == 0 {
 		return fmt.Errorf("downloaded list is not valid: %v", err)
 	}

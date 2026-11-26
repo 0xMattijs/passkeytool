@@ -1,4 +1,4 @@
-package main
+package ctap
 
 import (
 	"bytes"
@@ -20,11 +20,11 @@ import (
 
 // CTAP2 commands used here (CTAP 2.1 §6).
 const (
-	ctapGetInfo         = 0x04
-	ctapClientPIN       = 0x06
-	ctapReset           = 0x07
-	ctapCredMgmt        = 0x0a
-	ctapCredMgmtPreview = 0x41 // CTAP 2.1 prototype, still used by some keys
+	ctapGetInfo        = 0x04
+	ctapClientPIN      = 0x06
+	ctapReset          = 0x07
+	CmdCredMgmt        = 0x0a
+	CmdCredMgmtPreview = 0x41 // CTAP 2.1 prototype, still used by some keys
 )
 
 // ctapError is a CTAP status code (CTAP 2.1 §8.2), also used for CTAPHID errors.
@@ -64,7 +64,7 @@ func (e ctapError) Error() string {
 
 // cbor sends a CTAP2 command with an optional CBOR request and decodes the
 // response into resp, if given.
-func (d *ctapDevice) cbor(cmd byte, req, resp any) error {
+func (d *Device) cbor(cmd byte, req, resp any) error {
 	msg := []byte{cmd}
 	if req != nil {
 		b, err := webauthncbor.Marshal(req)
@@ -91,7 +91,7 @@ func (d *ctapDevice) cbor(cmd byte, req, resp any) error {
 
 // ---------- authenticatorGetInfo ----------
 
-type authenticatorInfo struct {
+type Info struct {
 	Versions           []string        `cbor:"1,keyasint"`
 	Extensions         []string        `cbor:"2,keyasint"`
 	AAGUID             []byte          `cbor:"3,keyasint"`
@@ -109,8 +109,8 @@ type authenticatorInfo struct {
 	RemainingDiscoverable *uint  `cbor:"20,keyasint"`
 }
 
-func (d *ctapDevice) getInfo() (*authenticatorInfo, error) {
-	var info authenticatorInfo
+func (d *Device) GetInfo() (*Info, error) {
+	var info Info
 	if err := d.cbor(ctapGetInfo, nil, &info); err != nil {
 		return nil, fmt.Errorf("getInfo: %w", err)
 	}
@@ -119,19 +119,19 @@ func (d *ctapDevice) getInfo() (*authenticatorInfo, error) {
 
 // credMgmtCommand returns the credential management command the key
 // supports, or 0.
-func (info *authenticatorInfo) credMgmtCommand() byte {
+func (info *Info) CredMgmtCommand() byte {
 	switch {
 	case info.Options["credMgmt"]:
-		return ctapCredMgmt
+		return CmdCredMgmt
 	case info.Options["credentialMgmtPreview"]:
-		return ctapCredMgmtPreview
+		return CmdCredMgmtPreview
 	}
 	return 0
 }
 
 // reset wipes the key's FIDO credentials and PIN (CTAP 2.1 §6.6). Keys
 // accept it only shortly after power-up, and wait for a touch.
-func (d *ctapDevice) reset() error {
+func (d *Device) Reset() error {
 	defer func(t time.Duration) { d.timeout = t }(d.timeout)
 	d.timeout = 30 * time.Second
 	err := d.cbor(ctapReset, nil, nil)
@@ -281,7 +281,7 @@ type clientPINResp struct {
 }
 
 // pinRetries returns how many PIN attempts are left before the key locks.
-func (d *ctapDevice) pinRetries() (uint, error) {
+func (d *Device) PINRetries() (uint, error) {
 	var resp clientPINResp
 	if err := d.cbor(ctapClientPIN, clientPINReq{SubCommand: pinGetRetries}, &resp); err != nil {
 		return 0, err
@@ -292,17 +292,17 @@ func (d *ctapDevice) pinRetries() (uint, error) {
 	return *resp.PinRetries, nil
 }
 
-// pinToken is a pinUvAuthToken and the protocol it was issued under.
-type pinToken struct {
+// PINToken is a pinUvAuthToken and the protocol it was issued under.
+type PINToken struct {
 	proto *pinProtocol
 	token []byte
 }
 
-func (t *pinToken) authenticate(msg []byte) []byte { return t.proto.authenticate(t.token, msg) }
+func (t *PINToken) authenticate(msg []byte) []byte { return t.proto.authenticate(t.token, msg) }
 
 // getPinToken exchanges the PIN for a pinUvAuthToken with the credential
 // management permission.
-func (d *ctapDevice) getPinToken(info *authenticatorInfo, pin string) (*pinToken, error) {
+func (d *Device) GetPINToken(info *Info, pin string) (*PINToken, error) {
 	proto, platformKey, err := d.keyAgreement(info)
 	if err != nil {
 		return nil, err
@@ -331,13 +331,13 @@ func (d *ctapDevice) getPinToken(info *authenticatorInfo, pin string) (*pinToken
 	if err != nil {
 		return nil, fmt.Errorf("decrypt PIN token: %w", err)
 	}
-	return &pinToken{proto: proto, token: token}, nil
+	return &PINToken{proto: proto, token: token}, nil
 }
 
 // keyAgreement runs the ECDH exchange that every clientPIN operation
 // starts with, returning the shared protocol keys and the platform's public
 // key to send along.
-func (d *ctapDevice) keyAgreement(info *authenticatorInfo) (*pinProtocol, *coseEC2Key, error) {
+func (d *Device) keyAgreement(info *Info) (*pinProtocol, *coseEC2Key, error) {
 	version := uint(1)
 	if slices.Contains(info.PinUvAuthProtocols, 2) {
 		version = 2
@@ -373,18 +373,18 @@ func (p *pinProtocol) pinHashEnc(pin string) ([]byte, error) {
 }
 
 // explainPINError adds the remaining attempts to a wrong-PIN error.
-func (d *ctapDevice) explainPINError(err error) error {
+func (d *Device) explainPINError(err error) error {
 	if errors.Is(err, ctapError(0x31)) {
-		if n, rerr := d.pinRetries(); rerr == nil {
+		if n, rerr := d.PINRetries(); rerr == nil {
 			return fmt.Errorf("wrong PIN, %d attempts left before the key locks", n)
 		}
 	}
 	return err
 }
 
-// checkNewPIN applies the CTAP rules for a new PIN: at least minLen Unicode
+// CheckNewPIN applies the CTAP rules for a new PIN: at least minLen Unicode
 // code points (4 if the key doesn't say) and at most 63 bytes.
-func checkNewPIN(pin string, minLen uint) error {
+func CheckNewPIN(pin string, minLen uint) error {
 	if minLen == 0 {
 		minLen = 4
 	}
@@ -399,8 +399,8 @@ func checkNewPIN(pin string, minLen uint) error {
 
 // setPIN sets the first PIN on a key, or changes it when oldPIN isn't empty
 // (CTAP 2.1 §6.5.5.5, §6.5.5.6).
-func (d *ctapDevice) setPIN(info *authenticatorInfo, oldPIN, newPIN string) error {
-	if err := checkNewPIN(newPIN, info.MinPINLength); err != nil {
+func (d *Device) SetPIN(info *Info, oldPIN, newPIN string) error {
+	if err := CheckNewPIN(newPIN, info.MinPINLength); err != nil {
 		return err
 	}
 	proto, platformKey, err := d.keyAgreement(info)
@@ -462,12 +462,12 @@ type credMgmtReq struct {
 	PinUvAuthParam []byte          `cbor:"4,keyasint,omitempty"`
 }
 
-type keyRP struct {
+type RP struct {
 	ID   string `cbor:"id"`
 	Name string `cbor:"name"`
 }
 
-type keyUser struct {
+type User struct {
 	ID          []byte `cbor:"id"`
 	Name        string `cbor:"name"`
 	DisplayName string `cbor:"displayName"`
@@ -476,24 +476,31 @@ type keyUser struct {
 type credMgmtResp struct {
 	ExistingCount    *uint                   `cbor:"1,keyasint"`
 	MaxRemaining     *uint                   `cbor:"2,keyasint"`
-	RP               *keyRP                  `cbor:"3,keyasint"`
+	RP               *RP                     `cbor:"3,keyasint"`
 	RPIDHash         []byte                  `cbor:"4,keyasint"`
 	TotalRPs         uint                    `cbor:"5,keyasint"`
-	User             *keyUser                `cbor:"6,keyasint"`
+	User             *User                   `cbor:"6,keyasint"`
 	CredentialID     *credDescriptor         `cbor:"7,keyasint"`
 	PublicKey        webauthncbor.RawMessage `cbor:"8,keyasint"`
 	TotalCredentials uint                    `cbor:"9,keyasint"`
 	CredProtect      uint                    `cbor:"10,keyasint"`
 }
 
-// credManager runs credential management subcommands with one PIN token.
-type credManager struct {
-	d     *ctapDevice
+// CredManager runs credential management subcommands with one PIN token.
+type CredManager struct {
+	d     *Device
 	cmd   byte
-	token *pinToken
+	token *PINToken
 }
 
-func (m *credManager) call(sub uint, params *credMgmtParams, auth bool) (*credMgmtResp, error) {
+// NewCredManager manages the credentials on d, using the credential
+// management command cmd (see Info.CredMgmtCommand) and a PIN token with the
+// credential management permission.
+func NewCredManager(d *Device, cmd byte, token *PINToken) *CredManager {
+	return &CredManager{d: d, cmd: cmd, token: token}
+}
+
+func (m *CredManager) call(sub uint, params *credMgmtParams, auth bool) (*credMgmtResp, error) {
 	req := credMgmtReq{SubCommand: sub, Params: params}
 	if auth {
 		msg := []byte{byte(sub)}
@@ -516,7 +523,7 @@ func (m *credManager) call(sub uint, params *credMgmtParams, auth bool) (*credMg
 
 // metadata returns the number of stored discoverable credentials and how
 // many more fit.
-func (m *credManager) metadata() (existing, remaining uint, err error) {
+func (m *CredManager) Metadata() (existing, remaining uint, err error) {
 	resp, err := m.call(cmGetCredsMetadata, nil, true)
 	if err != nil {
 		return 0, 0, err
@@ -530,12 +537,12 @@ func (m *credManager) metadata() (existing, remaining uint, err error) {
 	return existing, remaining, nil
 }
 
-type keyRPEntry struct {
-	RP     keyRP
+type RPEntry struct {
+	RP     RP
 	IDHash []byte
 }
 
-func (m *credManager) relyingParties() ([]keyRPEntry, error) {
+func (m *CredManager) RelyingParties() ([]RPEntry, error) {
 	resp, err := m.call(cmEnumerateRPsBegin, nil, true)
 	if errors.Is(err, ctapError(0x2e)) {
 		return nil, nil
@@ -545,9 +552,9 @@ func (m *credManager) relyingParties() ([]keyRPEntry, error) {
 	}
 	// Only the first response carries the total.
 	total := resp.TotalRPs
-	var out []keyRPEntry
+	var out []RPEntry
 	for {
-		e := keyRPEntry{IDHash: resp.RPIDHash}
+		e := RPEntry{IDHash: resp.RPIDHash}
 		if resp.RP != nil {
 			e.RP = *resp.RP
 		}
@@ -561,13 +568,13 @@ func (m *credManager) relyingParties() ([]keyRPEntry, error) {
 	}
 }
 
-type keyCredential struct {
+type Credential struct {
 	ID          []byte
-	User        keyUser
+	User        User
 	CredProtect uint
 }
 
-func (m *credManager) credentials(rpIDHash []byte) ([]keyCredential, error) {
+func (m *CredManager) Credentials(rpIDHash []byte) ([]Credential, error) {
 	resp, err := m.call(cmEnumerateCredsBegin, &credMgmtParams{RPIDHash: rpIDHash}, true)
 	if errors.Is(err, ctapError(0x2e)) {
 		return nil, nil
@@ -576,9 +583,9 @@ func (m *credManager) credentials(rpIDHash []byte) ([]keyCredential, error) {
 		return nil, err
 	}
 	total := resp.TotalCredentials
-	var out []keyCredential
+	var out []Credential
 	for {
-		c := keyCredential{CredProtect: resp.CredProtect}
+		c := Credential{CredProtect: resp.CredProtect}
 		if resp.CredentialID != nil {
 			c.ID = resp.CredentialID.ID
 		}
@@ -595,25 +602,25 @@ func (m *credManager) credentials(rpIDHash []byte) ([]keyCredential, error) {
 	}
 }
 
-func (m *credManager) deleteCredential(id []byte) error {
+func (m *CredManager) DeleteCredential(id []byte) error {
 	_, err := m.call(cmDeleteCredential, &credMgmtParams{CredentialID: &credDescriptor{ID: id, Type: "public-key"}}, true)
 	return err
 }
 
 // rpIDHash is the SHA-256 of an RP ID, which keys index credentials by.
-func rpIDHash(rpID string) []byte {
+func RPIDHash(rpID string) []byte {
 	h := sha256.Sum256([]byte(rpID))
 	return h[:]
 }
 
 // findCredential locates a credential on the key by ID.
-func (m *credManager) findCredential(id []byte) (*keyRPEntry, *keyCredential, error) {
-	rps, err := m.relyingParties()
+func (m *CredManager) FindCredential(id []byte) (*RPEntry, *Credential, error) {
+	rps, err := m.RelyingParties()
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, rp := range rps {
-		creds, err := m.credentials(rp.IDHash)
+		creds, err := m.Credentials(rp.IDHash)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -624,4 +631,17 @@ func (m *credManager) findCredential(id []byte) (*keyRPEntry, *keyCredential, er
 		}
 	}
 	return nil, nil, nil
+}
+
+// CredProtectName describes a credProtect level (CTAP 2.1 §12.1).
+func CredProtectName(level uint) string {
+	switch level {
+	case 1:
+		return "UV optional"
+	case 2:
+		return "UV or ID list"
+	case 3:
+		return "UV required"
+	}
+	return "-"
 }

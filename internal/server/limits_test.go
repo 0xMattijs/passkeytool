@@ -1,6 +1,7 @@
-package main
+package server
 
 import (
+	"github.com/0xMattijs/passkeytool/internal/store"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -41,18 +42,18 @@ func TestClientIP(t *testing.T) {
 }
 
 func TestPublicLimits(t *testing.T) {
-	cfg := serveConfig{
+	cfg := Config{
 		RPID: "localhost", RPName: "test", Origins: []string{"http://localhost:8080"},
 		MaxUsers: 1, RateLimit: 2,
 	}
-	store := NewStore(filepath.Join(t.TempDir(), "data.json"))
-	if err := store.Update(func(d *storeData) error {
-		d.Users = append(d.Users, &User{ID: []byte("u1"), Name: "alice"})
+	st := store.New(filepath.Join(t.TempDir(), "data.json"))
+	if err := st.Update(func(d *store.Data) error {
+		d.Users = append(d.Users, &store.User{ID: []byte("u1"), Name: "alice"})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := NewServer(cfg, store)
+	srv, err := New(cfg, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +89,8 @@ func TestPublicLimits(t *testing.T) {
 }
 
 func TestSessionCap(t *testing.T) {
-	srv, err := NewServer(serveConfig{RPID: "localhost", RPName: "test", Origins: []string{"http://localhost:8080"}},
-		NewStore(filepath.Join(t.TempDir(), "data.json")))
+	srv, err := New(Config{RPID: "localhost", RPName: "test", Origins: []string{"http://localhost:8080"}},
+		store.New(filepath.Join(t.TempDir(), "data.json")))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"path/filepath"
@@ -9,13 +9,13 @@ import (
 )
 
 func TestStoreRoundTripKeepsCredentialMetadata(t *testing.T) {
-	s := NewStore(filepath.Join(t.TempDir(), "data.json"))
+	s := New(filepath.Join(t.TempDir(), "data.json"))
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	err := s.Update(func(d *storeData) error {
+	err := s.Update(func(d *Data) error {
 		d.Users = append(d.Users, &User{
 			ID:   []byte{1, 2, 3},
 			Name: "alice",
-			Credentials: []StoredCredential{{
+			Credentials: []Credential{{
 				Credential: webauthn.Credential{ID: []byte{9, 9}, PublicKey: []byte{7}},
 				Nickname:   "USB key",
 				CreatedAt:  created,
@@ -28,8 +28,8 @@ func TestStoreRoundTripKeepsCredentialMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.View(func(d *storeData) error {
-		c := d.userByName("alice").Credentials[0]
+	err = s.View(func(d *Data) error {
+		c := d.UserByName("alice").Credentials[0]
 		if c.Nickname != "USB key" || !c.CreatedAt.Equal(created) || c.UseCount != 3 || !c.LastUsedAt.Equal(created.Add(time.Hour)) {
 			t.Errorf("metadata lost: %+v", c)
 		}

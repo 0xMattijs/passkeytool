@@ -1,4 +1,4 @@
-package main
+package aaguid
 
 import (
 	"os"
@@ -11,8 +11,8 @@ func TestLookupAAGUID(t *testing.T) {
 	other := make([]byte, 16)
 	other[0] = 0x42
 
-	aaguidDB.Store(nil)
-	if got := aaguidName(gpm); got != "Google Password Manager" {
+	db.Store(nil)
+	if got := Name(gpm); got != "Google Password Manager" {
 		t.Errorf("built-in fallback: got %q", got)
 	}
 
@@ -21,15 +21,15 @@ func TestLookupAAGUID(t *testing.T) {
 	if err := os.WriteFile(path, []byte(list), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := loadAAGUIDs(path); err != nil || n != 1 {
+	if n, err := Load(path); err != nil || n != 1 {
 		t.Fatalf("load: n=%d err=%v", n, err)
 	}
-	t.Cleanup(func() { aaguidDB.Store(nil) })
+	t.Cleanup(func() { db.Store(nil) })
 
-	if e := lookupAAGUID(other); e.Name != "Test Key" || e.IconLight != "data:x" {
+	if e := Lookup(other); e.Name != "Test Key" || e.IconLight != "data:x" {
 		t.Errorf("loaded list: got %+v", e)
 	}
-	if got := aaguidName(gpm); got != "Google Password Manager" {
+	if got := Name(gpm); got != "Google Password Manager" {
 		t.Errorf("fallback after load: got %q", got)
 	}
 }
