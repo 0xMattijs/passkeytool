@@ -459,7 +459,7 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		cred, err = s.wa.ValidateLogin(u, *sd, parsed)
 	}
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, describeErr(err))
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("credential %s: %w", parsed.ID, describeErr(err)))
 		return
 	}
 
@@ -624,6 +624,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
+	if rec, ok := w.(*statusRecorder); ok {
+		rec.note = err.Error()
+	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
@@ -658,6 +661,7 @@ func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	note   string // error message, logged with the request
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -674,7 +678,11 @@ func logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		msg := fmt.Sprintf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		if rec.note != "" {
+			msg += ": " + rec.note
+		}
+		log.Print(msg)
 	})
 }
 
