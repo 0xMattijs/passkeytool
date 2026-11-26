@@ -51,7 +51,31 @@ security keys behave with different ceremony options.
 - A `key` command that lists, deletes, and resets the passkeys on a USB
   security key, and sets its PIN (Linux). See [Security keys](#security-keys).
 
-## Build
+## Install
+
+Download the archive for your platform from the
+[latest release](https://github.com/0xMattijs/passkeytool/releases/latest).
+Builds are available for Linux and macOS (amd64 and arm64) and Windows
+(amd64). The `key` command works only on Linux.
+
+```sh
+tar -xzf passkeytool_*_linux_amd64.tar.gz
+cd passkeytool_*_linux_amd64
+./passkeytool serve
+```
+
+Each release includes `SHA256SUMS` and a signed build provenance
+attestation. To check that an archive was built by this repository's
+release workflow, run:
+
+```sh
+gh attestation verify passkeytool_*_linux_amd64.tar.gz --repo 0xMattijs/passkeytool
+```
+
+On macOS, a downloaded binary is quarantined. To allow it to run, run
+`xattr -d com.apple.quarantine passkeytool`.
+
+### Build from source
 
 Requires Go 1.26 or later.
 
