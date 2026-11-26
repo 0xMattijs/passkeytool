@@ -6,3 +6,4 @@ passkeys-data.json
 *.tmp
 .playwright-mcp
 .impeccable
+docs

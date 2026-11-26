@@ -9,6 +9,13 @@ passkeys, and the other commands manage the data file.
 Use it to see how browsers, platform authenticators, password managers, and
 security keys behave with different ceremony options.
 
+Try it at **<https://passkeytool.alcyon.nl>**, a public test server whose
+accounts reset regularly, or [download a release](https://github.com/0xMattijs/passkeytool/releases/latest)
+and run it locally.
+
+![passkeytool signed in with a security key: the account's passkey with its
+authenticator, AAGUID, and flags, next to the ceremony log](docs/screenshot.png)
+
 ## Features
 
 - Registration with configurable `residentKey`, `userVerification`,
