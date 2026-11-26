@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in passkeytool or a generated app doesn't work.
+labels: [bug]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Test tab (serve)
+        - Developer tab or codegen
+        - Security keys (key)
+        - Data commands
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got. Include error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: For codegen bugs, include the language and the Developer tab share link or -spec JSON.
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: passkeytool commit, OS, browser, and authenticator (for example, YubiKey 5 or Google Password Manager).
+    validations:
+      required: true

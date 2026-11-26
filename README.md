@@ -1,5 +1,7 @@
 # passkeytool
 
+[![CI](https://github.com/0xMattijs/passkeytool/actions/workflows/ci.yml/badge.svg)](https://github.com/0xMattijs/passkeytool/actions/workflows/ci.yml)
+
 A self-contained WebAuthn / passkeys test relying party. It's a single Go
 binary: the `serve` command runs a web app for registering and signing in with
 passkeys, and the other commands manage the data file.
@@ -194,3 +196,15 @@ are used.
   JSON. Don't use it as a production relying party.
 - Server-side verification uses
   [go-webauthn/webauthn](https://github.com/go-webauthn/webauthn).
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before you
+open a pull request, and report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md).
+
+## License
+
+passkeytool is licensed under the [MIT License](LICENSE). Code that the
+generator writes is licensed under 0BSD, so you can copy it into your own
+project without attribution.
