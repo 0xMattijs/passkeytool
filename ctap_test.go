@@ -57,7 +57,7 @@ func newFakeKey(t *testing.T, protocols ...uint) *fakeKey {
 		rps: []*fakeRP{
 			{id: "localhost", creds: []keyCredential{
 				{ID: []byte("cred-alice"), User: keyUser{ID: []byte("uid-alice"), Name: "alice", DisplayName: "Alice"}},
-				{ID: []byte("cred-bob"), User: keyUser{ID: []byte("uid-bob"), Name: "bob"}},
+				{ID: []byte("cred-bob"), User: keyUser{ID: []byte("uid-bob"), Name: "bob"}, CredProtect: 3},
 			}},
 			{id: "example.com", creds: []keyCredential{
 				{ID: bytes.Repeat([]byte{0xab}, 64), User: keyUser{ID: []byte("u3"), Name: "a-rather-long-user-name@example.com"}},
@@ -149,6 +149,9 @@ func (k *fakeKey) handle(cmd byte, body []byte) []byte {
 			k.t.Fatalf("clientPIN request: %v", err)
 		}
 		return k.clientPIN(req)
+	case ctapReset:
+		k.pin, k.rps = "", nil
+		return []byte{0}
 	case ctapCredMgmt:
 		var req credMgmtReq
 		if err := webauthncbor.Unmarshal(body, &req); err != nil {
@@ -165,28 +168,34 @@ func (k *fakeKey) clientPIN(req clientPINReq) []byte {
 		return k.ok(map[int]any{3: k.retries})
 	case pinGetKeyAgreement:
 		return k.ok(map[int]any{1: coseFromECDH(k.priv.PublicKey())})
+	case pinSetPIN, pinChangePIN:
+		proto := k.shared(req)
+		msg := req.NewPinEnc
+		if req.SubCommand == pinChangePIN {
+			msg = append(append([]byte(nil), req.NewPinEnc...), req.PinHashEnc...)
+		}
+		if !hmac.Equal(req.PinUvAuthParam, proto.authenticate(proto.hmacKey, msg)) {
+			return []byte{0x33}
+		}
+		if req.SubCommand == pinSetPIN && k.pin != "" {
+			return []byte{0x27}
+		}
+		if req.SubCommand == pinChangePIN && !k.pinMatches(proto, req.PinHashEnc) {
+			k.retries--
+			return []byte{0x31}
+		}
+		padded, err := proto.decrypt(req.NewPinEnc)
+		if err != nil || len(padded) != 64 {
+			k.t.Fatalf("newPinEnc: %d bytes, %v", len(padded), err)
+		}
+		k.pin = string(bytes.TrimRight(padded, "\x00"))
+		return []byte{0}
 	case pinGetPinUvAuthTokenWithPerms:
 		if req.Permissions&permCredentialManagement == 0 {
 			k.t.Errorf("token requested without the cm permission")
 		}
-		peer, err := req.KeyAgreement.ecdh()
-		if err != nil {
-			k.t.Fatal(err)
-		}
-		z, err := k.priv.ECDH(peer)
-		if err != nil {
-			k.t.Fatal(err)
-		}
-		proto, err := newPinProtocol(req.Protocol, z)
-		if err != nil {
-			k.t.Fatal(err)
-		}
-		got, err := proto.decrypt(req.PinHashEnc)
-		if err != nil {
-			k.t.Fatal(err)
-		}
-		want := sha256.Sum256([]byte(k.pin))
-		if !bytes.Equal(got, want[:16]) {
+		proto := k.shared(req)
+		if !k.pinMatches(proto, req.PinHashEnc) {
 			k.retries--
 			return []byte{0x31}
 		}
@@ -200,6 +209,31 @@ func (k *fakeKey) clientPIN(req clientPINReq) []byte {
 		return k.ok(map[int]any{2: enc})
 	}
 	return []byte{0x02}
+}
+
+func (k *fakeKey) shared(req clientPINReq) *pinProtocol {
+	peer, err := req.KeyAgreement.ecdh()
+	if err != nil {
+		k.t.Fatal(err)
+	}
+	z, err := k.priv.ECDH(peer)
+	if err != nil {
+		k.t.Fatal(err)
+	}
+	proto, err := newPinProtocol(req.Protocol, z)
+	if err != nil {
+		k.t.Fatal(err)
+	}
+	return proto
+}
+
+func (k *fakeKey) pinMatches(proto *pinProtocol, pinHashEnc []byte) bool {
+	got, err := proto.decrypt(pinHashEnc)
+	if err != nil {
+		k.t.Fatal(err)
+	}
+	want := sha256.Sum256([]byte(k.pin))
+	return k.pin != "" && bytes.Equal(got, want[:16])
 }
 
 func (k *fakeKey) checkAuth(req credMgmtReq) bool {
@@ -217,6 +251,9 @@ func (k *fakeKey) credResp(total int) []byte {
 	m := map[int]any{
 		6: map[string]any{"id": c.User.ID, "name": c.User.Name, "displayName": c.User.DisplayName},
 		7: map[string]any{"id": c.ID, "type": "public-key"},
+	}
+	if c.CredProtect != 0 {
+		m[10] = c.CredProtect
 	}
 	if total > 0 {
 		m[9] = total
@@ -326,6 +363,9 @@ func TestKeyCredentialManagement(t *testing.T) {
 			if err != nil || len(creds) != 2 || creds[0].User.Name != "alice" || creds[0].User.DisplayName != "Alice" {
 				t.Fatalf("credentials = %+v, %v", creds, err)
 			}
+			if creds[1].CredProtect != 3 || credProtectName(creds[1].CredProtect) != "UV required" {
+				t.Errorf("credProtect = %d", creds[1].CredProtect)
+			}
 			long, err := m.credentials(rpIDHash("example.com"))
 			if err != nil || len(long) != 1 || len(long[0].ID) != 64 {
 				t.Fatalf("multi-report credential = %+v, %v", long, err)
@@ -386,5 +426,54 @@ func TestHasFIDOUsagePage(t *testing.T) {
 	}
 	if hasFIDOUsagePage(keyboard) || hasFIDOUsagePage(tricky) {
 		t.Error("non-FIDO descriptor detected as FIDO")
+	}
+}
+
+func TestKeySetAndChangePIN(t *testing.T) {
+	for _, protocols := range [][]uint{{2, 1}, {1}} {
+		t.Run(fmt.Sprintf("protocols %v", protocols), func(t *testing.T) {
+			k := newFakeKey(t, protocols...)
+			k.pin = ""
+			d, err := newCTAPDevice(k)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := d.getInfo()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.setPIN(info, "", "123"); err == nil {
+				t.Fatal("accepted a 3-character PIN")
+			}
+			if err := d.setPIN(info, "", "4321"); err != nil || k.pin != "4321" {
+				t.Fatalf("set PIN: pin=%q, %v", k.pin, err)
+			}
+			if err := d.setPIN(info, "0000", "5555"); err == nil || !strings.Contains(err.Error(), "attempts left") {
+				t.Fatalf("change with wrong PIN: %v", err)
+			}
+			if err := d.setPIN(info, "4321", "new-pin-éé"); err != nil || k.pin != "new-pin-éé" {
+				t.Fatalf("change PIN: pin=%q, %v", k.pin, err)
+			}
+			if _, err := d.getPinToken(info, "new-pin-éé"); err != nil {
+				t.Fatalf("token with the new PIN: %v", err)
+			}
+		})
+	}
+}
+
+func TestKeyReset(t *testing.T) {
+	k := newFakeKey(t, 2, 1)
+	d, err := newCTAPDevice(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.reset(); err != nil {
+		t.Fatal(err)
+	}
+	if k.pin != "" || len(k.rps) != 0 {
+		t.Fatalf("after reset: pin=%q, %d RPs", k.pin, len(k.rps))
+	}
+	if d.timeout != 5*time.Second {
+		t.Errorf("timeout not restored: %v", d.timeout)
 	}
 }

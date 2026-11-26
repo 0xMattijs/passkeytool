@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -34,6 +35,10 @@ func cmdKey(args []string) error {
 		return cmdKeyList(args)
 	case "rm", "delete":
 		return cmdKeyDelete(args)
+	case "pin":
+		return cmdKeyPIN(args)
+	case "reset":
+		return cmdKeyReset(args)
 	case "help", "-h", "--help":
 		keyUsage()
 		return nil
@@ -51,7 +56,10 @@ Subcommands:
   devices             List connected FIDO security keys
   info                Show what the key supports (no PIN needed)
   ls                  List the passkeys on the key (asks for the PIN)
-  rm CREDENTIAL_ID    Delete a passkey from the key (asks for the PIN)
+  rm CREDENTIAL_ID    Delete a passkey from the key (asks for the PIN);
+                      -server also deletes it from the data file
+  pin                 Set the key's PIN, or change it
+  reset               Erase all passkeys and the PIN (factory reset)
 
 Flags:
   -device PATH        The key to use, such as /dev/hidraw2 (default: the
@@ -199,8 +207,8 @@ func cmdKeyInfo(args []string) error {
 
 var stdin = bufio.NewReader(os.Stdin)
 
-func readPIN(label string) (string, error) {
-	fmt.Fprintf(os.Stderr, "PIN for %s: ", label)
+func readPIN(prompt string) (string, error) {
+	fmt.Fprintf(os.Stderr, "%s: ", prompt)
 	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
 		b, err := term.ReadPassword(fd)
 		fmt.Fprintln(os.Stderr)
@@ -233,9 +241,13 @@ func openCredManager(device string) (*ctapDevice, *credManager, string, error) {
 	}
 	if !info.Options["clientPin"] {
 		d.Close()
-		return nil, nil, "", fmt.Errorf("%s has no PIN set; set one first, for example in chrome://settings/securityKeys", label)
+		return nil, nil, "", fmt.Errorf("%s has no PIN set; set one with: passkeys-test key pin", label)
 	}
-	pin, err := readPIN(label)
+	if info.ForcePINChange {
+		d.Close()
+		return nil, nil, "", fmt.Errorf("%s requires a new PIN before use; change it with: passkeys-test key pin", label)
+	}
+	pin, err := readPIN("PIN for " + label)
 	if err != nil {
 		d.Close()
 		return nil, nil, "", err
@@ -279,7 +291,7 @@ func cmdKeyList(args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "RP ID\tUSER\tCREDENTIAL ID\tON SERVER")
+	fmt.Fprintln(tw, "RP ID\tUSER\tCREDENTIAL ID\tPROTECTION\tON SERVER")
 	n := 0
 	for _, rp := range rps {
 		creds, err := m.credentials(rp.IDHash)
@@ -292,7 +304,7 @@ func cmdKeyList(args []string) error {
 			if c.User.DisplayName != "" && c.User.DisplayName != c.User.Name {
 				user += " (" + c.User.DisplayName + ")"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", orDefault(rp.RP.ID, "sha256:"+b64(rp.IDHash)), user, b64(c.ID), serverStatus(server, c))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", orDefault(rp.RP.ID, "sha256:"+b64(rp.IDHash)), user, b64(c.ID), credProtectName(c.CredProtect), serverStatus(server, c))
 		}
 	}
 	if n == 0 {
@@ -306,8 +318,22 @@ func cmdKeyList(args []string) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	fmt.Printf("\nON SERVER compares with %s. \"no\" means the server can't sign you in with that passkey.\n", *data)
+	fmt.Printf("\nPROTECTION is the credProtect level: when the key releases the passkey without UV.\n")
+	fmt.Printf("ON SERVER compares with %s. \"no\" means the server can't sign you in with that passkey.\n", *data)
 	return nil
+}
+
+// credProtectName describes a credProtect level (CTAP 2.1 §12.1).
+func credProtectName(level uint) string {
+	switch level {
+	case 1:
+		return "UV optional"
+	case 2:
+		return "UV or ID list"
+	case 3:
+		return "UV required"
+	}
+	return "-"
 }
 
 // serverStatus says whether the server's data file knows a credential.
@@ -328,9 +354,11 @@ func cmdKeyDelete(args []string) error {
 	fs := flag.NewFlagSet("key rm", flag.ExitOnError)
 	device := deviceFlag(fs)
 	yes := fs.Bool("y", false, "do not ask for confirmation")
+	alsoServer := fs.Bool("server", false, "also delete the passkey from the data file")
+	data := dataFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
-		return errors.New("usage: passkeys-test key rm [-device PATH] [-y] CREDENTIAL_ID")
+		return errors.New("usage: passkeys-test key rm [-device PATH] [-y] [-server] CREDENTIAL_ID")
 	}
 	id, err := decodeB64(fs.Arg(0))
 	if err != nil {
@@ -362,6 +390,193 @@ func cmdKeyDelete(args []string) error {
 	if err := m.deleteCredential(id); err != nil {
 		return fmt.Errorf("delete: %w", err)
 	}
-	fmt.Printf("deleted %s\n", desc)
+	fmt.Printf("deleted %s from the key\n", desc)
+
+	store := NewStore(*data)
+	if !*alsoServer {
+		var owner string
+		_ = store.View(func(d *storeData) error {
+			if u, _ := d.credential(id); u != nil {
+				owner = u.Name
+			}
+			return nil
+		})
+		if owner != "" {
+			fmt.Printf("the server still lists it for %s; remove it with: passkeys-test delete-credential %s\n", owner, b64(id))
+		}
+		return nil
+	}
+	return store.Update(func(d *storeData) error {
+		u, _ := d.credential(id)
+		if u == nil {
+			fmt.Printf("%s has no record of it\n", *data)
+			return nil
+		}
+		u.deleteCredential(id)
+		fmt.Printf("deleted it from user %q in %s\n", u.Name, *data)
+		return nil
+	})
+}
+
+func cmdKeyPIN(args []string) error {
+	fs := flag.NewFlagSet("key pin", flag.ExitOnError)
+	device := deviceFlag(fs)
+	_ = fs.Parse(args)
+
+	d, dev, err := openKey(*device)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	info, err := d.getInfo()
+	if err != nil {
+		return err
+	}
+	_, _ = loadAAGUIDs(defaultAAGUIDPath())
+	label := keyLabel(dev, info)
+	if _, ok := info.Options["clientPin"]; !ok {
+		return fmt.Errorf("%s doesn't support a PIN", label)
+	}
+
+	var oldPIN string
+	if info.Options["clientPin"] {
+		if oldPIN, err = readPIN("current PIN for " + label); err != nil {
+			return err
+		}
+	}
+	newPIN, err := readPIN("new PIN")
+	if err != nil {
+		return err
+	}
+	if err := checkNewPIN(newPIN, info.MinPINLength); err != nil {
+		return err
+	}
+	again, err := readPIN("new PIN again")
+	if err != nil {
+		return err
+	}
+	if again != newPIN {
+		return errors.New("the PINs don't match")
+	}
+	if err := d.setPIN(info, oldPIN, newPIN); err != nil {
+		return err
+	}
+	if oldPIN == "" {
+		fmt.Printf("PIN set on %s\n", label)
+	} else {
+		fmt.Printf("PIN changed on %s\n", label)
+	}
 	return nil
+}
+
+func cmdKeyReset(args []string) error {
+	fs := flag.NewFlagSet("key reset", flag.ExitOnError)
+	device := deviceFlag(fs)
+	yes := fs.Bool("y", false, "do not ask for confirmation")
+	noReplug := fs.Bool("no-replug", false, "send the reset right away instead of waiting for the key to be replugged")
+	_ = fs.Parse(args)
+
+	d, dev, err := openKey(*device)
+	if err != nil {
+		return err
+	}
+	info, err := d.getInfo()
+	d.Close()
+	if err != nil {
+		return err
+	}
+	_, _ = loadAAGUIDs(defaultAAGUIDPath())
+	label := keyLabel(dev, info)
+
+	fmt.Printf(`This erases every passkey on %s and clears its PIN.
+Sites where you registered this key, including this server, won't accept it
+anymore. Other functions of the key, such as PIV smart-card certificates,
+aren't affected.
+`, label)
+	if !*yes {
+		fmt.Print(`Type "reset" to continue: `)
+		answer, _ := stdin.ReadString('\n')
+		if strings.TrimSpace(answer) != "reset" {
+			return errors.New("aborted")
+		}
+	}
+
+	if !*noReplug {
+		// Keys accept a reset only within a few seconds of power-up, so
+		// send it as soon as the key comes back.
+		if dev, err = waitForReplug(dev, time.Minute); err != nil {
+			return err
+		}
+	}
+	d, err = openReplugged(dev.Path)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	fmt.Println("Touch the key to confirm the reset.")
+	if err := d.reset(); err != nil {
+		if *noReplug {
+			return fmt.Errorf("%w; run the command again without -no-replug", err)
+		}
+		return err
+	}
+	fmt.Println("Reset done. The key has no passkeys and no PIN. Set a PIN with: passkeys-test key pin")
+	return nil
+}
+
+// waitForReplug waits for the key to disappear and come back, matching it
+// by USB ID because its device path may change.
+func waitForReplug(dev hidDeviceInfo, timeout time.Duration) (hidDeviceInfo, error) {
+	deadline := time.Now().Add(timeout)
+	fmt.Println("Unplug the key.")
+	for {
+		devs, err := findFIDODevices()
+		if err != nil {
+			return dev, err
+		}
+		if !slices.ContainsFunc(devs, func(d hidDeviceInfo) bool { return d.Path == dev.Path }) {
+			break
+		}
+		if time.Now().After(deadline) {
+			return dev, errors.New("the key wasn't unplugged in time")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	fmt.Println("Plug it back in.")
+	for {
+		devs, err := findFIDODevices()
+		if err != nil {
+			return dev, err
+		}
+		for _, d := range devs {
+			if dev.USBID == "" || d.USBID == dev.USBID {
+				return d, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return dev, errors.New("the key wasn't plugged back in time")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// openReplugged opens a key that just appeared, retrying while udev is
+// still setting the device's permissions.
+func openReplugged(path string) (*ctapDevice, error) {
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		t, err := openHID(path)
+		if err == nil {
+			d, err := newCTAPDevice(t)
+			if err != nil {
+				t.Close()
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			return d, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

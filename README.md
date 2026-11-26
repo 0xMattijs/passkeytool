@@ -17,8 +17,8 @@ security keys behave with different ceremony options.
   (`security-key`, `client-device`, `hybrid`).
 - PRF evaluation at sign-in with a salt you choose. Registration requests
   the `prf` extension by default, which security keys need to support PRF
-  later. The derived secret is
-  shown in the log and stripped before the response goes to the server.
+  later. The derived secret is shown in the log and stripped before the
+  response goes to the server.
 - Multiple passkeys per account, with rename and delete.
 - Per-passkey details: provider name and icon (from the AAGUID), attachment,
   transports, attestation format, backup eligibility and state (synced or
@@ -36,6 +36,10 @@ security keys behave with different ceremony options.
   mediation).
 - Signal API calls (`signalUnknownCredential`,
   `signalAllAcceptedCredentials`) when passkeys are deleted or rejected.
+- Failed API requests are logged by the server with the reason, such as an
+  unknown credential ID.
+- A `key` command that lists, deletes, and resets the passkeys on a USB
+  security key, and sets its PIN (Linux). See [Security keys](#security-keys).
 
 ## Build
 
@@ -106,7 +110,15 @@ account picker.
 ./passkeys-test key ls                       # list passkeys (asks for the PIN)
 ./passkeys-test key ls -rp localhost         # only this RP ID
 ./passkeys-test key rm <credential-id>       # delete a passkey (asks for the PIN)
+./passkeys-test key rm -server <id>          # also delete it from the data file
+./passkeys-test key pin                      # set or change the PIN
+./passkeys-test key reset                    # erase all passkeys and the PIN
 ```
+
+CTAP can't remove a PIN, only change it; a reset is the only way to clear
+it. Keys accept a reset only within a few seconds of being plugged in, so
+`key reset` asks you to unplug and replug the key, sends the reset as soon
+as the key reappears, and then waits for you to touch it.
 
 `key ls` compares each passkey with the data file and shows whether the
 server can sign you in with it. With several keys connected, choose one with

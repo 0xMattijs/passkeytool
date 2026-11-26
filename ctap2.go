@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
+	"unicode/utf8"
 
 	"github.com/go-webauthn/webauthn/protocol/webauthncbor"
 )
@@ -20,6 +22,7 @@ import (
 const (
 	ctapGetInfo         = 0x04
 	ctapClientPIN       = 0x06
+	ctapReset           = 0x07
 	ctapCredMgmt        = 0x0a
 	ctapCredMgmtPreview = 0x41 // CTAP 2.1 prototype, still used by some keys
 )
@@ -39,6 +42,7 @@ var ctapErrorNames = map[ctapError]string{
 	0x27: "operation denied",
 	0x2e: "no credentials",
 	0x2f: "user action timeout",
+	0x30: "not allowed",
 	0x31: "PIN invalid",
 	0x32: "PIN blocked: reset the key to use it again",
 	0x33: "PIN auth invalid",
@@ -123,6 +127,23 @@ func (info *authenticatorInfo) credMgmtCommand() byte {
 		return ctapCredMgmtPreview
 	}
 	return 0
+}
+
+// reset wipes the key's FIDO credentials and PIN (CTAP 2.1 §6.6). Keys
+// accept it only shortly after power-up, and wait for a touch.
+func (d *ctapDevice) reset() error {
+	defer func(t time.Duration) { d.timeout = t }(d.timeout)
+	d.timeout = 30 * time.Second
+	err := d.cbor(ctapReset, nil, nil)
+	switch {
+	case errors.Is(err, ctapError(0x30)):
+		return errors.New("the key refused: it only accepts a reset within a few seconds of being plugged in")
+	case errors.Is(err, ctapError(0x27)):
+		return errors.New("the reset was declined on the key")
+	case errors.Is(err, ctapError(0x2f)):
+		return errors.New("the key wasn't touched in time")
+	}
+	return err
 }
 
 // ---------- PIN/UV auth protocols (CTAP 2.1 §6.5.6, §6.5.7) ----------
@@ -235,6 +256,8 @@ func (p *pinProtocol) authenticate(key, msg []byte) []byte {
 
 const (
 	pinGetRetries                      = 0x01
+	pinSetPIN                          = 0x03
+	pinChangePIN                       = 0x04
 	pinGetKeyAgreement                 = 0x02
 	pinGetPinToken                     = 0x05
 	pinGetPinUvAuthTokenWithPerms      = 0x09
@@ -242,11 +265,13 @@ const (
 )
 
 type clientPINReq struct {
-	Protocol     uint        `cbor:"1,keyasint,omitempty"`
-	SubCommand   uint        `cbor:"2,keyasint"`
-	KeyAgreement *coseEC2Key `cbor:"3,keyasint,omitempty"`
-	PinHashEnc   []byte      `cbor:"6,keyasint,omitempty"`
-	Permissions  uint        `cbor:"9,keyasint,omitempty"`
+	Protocol       uint        `cbor:"1,keyasint,omitempty"`
+	SubCommand     uint        `cbor:"2,keyasint"`
+	KeyAgreement   *coseEC2Key `cbor:"3,keyasint,omitempty"`
+	PinUvAuthParam []byte      `cbor:"4,keyasint,omitempty"`
+	NewPinEnc      []byte      `cbor:"5,keyasint,omitempty"`
+	PinHashEnc     []byte      `cbor:"6,keyasint,omitempty"`
+	Permissions    uint        `cbor:"9,keyasint,omitempty"`
 }
 
 type clientPINResp struct {
@@ -278,43 +303,18 @@ func (t *pinToken) authenticate(msg []byte) []byte { return t.proto.authenticate
 // getPinToken exchanges the PIN for a pinUvAuthToken with the credential
 // management permission.
 func (d *ctapDevice) getPinToken(info *authenticatorInfo, pin string) (*pinToken, error) {
-	version := uint(1)
-	if slices.Contains(info.PinUvAuthProtocols, 2) {
-		version = 2
-	} else if len(info.PinUvAuthProtocols) > 0 && !slices.Contains(info.PinUvAuthProtocols, 1) {
-		return nil, fmt.Errorf("no supported PIN/UV auth protocol in %v", info.PinUvAuthProtocols)
-	}
-
-	var ka clientPINResp
-	if err := d.cbor(ctapClientPIN, clientPINReq{Protocol: version, SubCommand: pinGetKeyAgreement}, &ka); err != nil {
-		return nil, fmt.Errorf("getKeyAgreement: %w", err)
-	}
-	peer, err := ka.KeyAgreement.ecdh()
+	proto, platformKey, err := d.keyAgreement(info)
 	if err != nil {
 		return nil, err
 	}
-	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	pinHashEnc, err := proto.pinHashEnc(pin)
 	if err != nil {
 		return nil, err
 	}
-	z, err := priv.ECDH(peer)
-	if err != nil {
-		return nil, err
-	}
-	proto, err := newPinProtocol(version, z)
-	if err != nil {
-		return nil, err
-	}
-	pinHash := sha256.Sum256([]byte(pin))
-	pinHashEnc, err := proto.encrypt(pinHash[:16])
-	if err != nil {
-		return nil, err
-	}
-
 	req := clientPINReq{
-		Protocol:     version,
+		Protocol:     proto.version,
 		SubCommand:   pinGetPinToken,
-		KeyAgreement: coseFromECDH(priv.PublicKey()),
+		KeyAgreement: platformKey,
 		PinHashEnc:   pinHashEnc,
 	}
 	// CTAP 2.1 keys scope tokens with permissions; older ones issue
@@ -325,18 +325,113 @@ func (d *ctapDevice) getPinToken(info *authenticatorInfo, pin string) (*pinToken
 	}
 	var resp clientPINResp
 	if err := d.cbor(ctapClientPIN, req, &resp); err != nil {
-		if errors.Is(err, ctapError(0x31)) {
-			if n, rerr := d.pinRetries(); rerr == nil {
-				return nil, fmt.Errorf("wrong PIN, %d attempts left before the key locks", n)
-			}
-		}
-		return nil, err
+		return nil, d.explainPINError(err)
 	}
 	token, err := proto.decrypt(resp.PinUvAuthToken)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt PIN token: %w", err)
 	}
 	return &pinToken{proto: proto, token: token}, nil
+}
+
+// keyAgreement runs the ECDH exchange that every clientPIN operation
+// starts with, returning the shared protocol keys and the platform's public
+// key to send along.
+func (d *ctapDevice) keyAgreement(info *authenticatorInfo) (*pinProtocol, *coseEC2Key, error) {
+	version := uint(1)
+	if slices.Contains(info.PinUvAuthProtocols, 2) {
+		version = 2
+	} else if len(info.PinUvAuthProtocols) > 0 && !slices.Contains(info.PinUvAuthProtocols, 1) {
+		return nil, nil, fmt.Errorf("no supported PIN/UV auth protocol in %v", info.PinUvAuthProtocols)
+	}
+	var ka clientPINResp
+	if err := d.cbor(ctapClientPIN, clientPINReq{Protocol: version, SubCommand: pinGetKeyAgreement}, &ka); err != nil {
+		return nil, nil, fmt.Errorf("getKeyAgreement: %w", err)
+	}
+	peer, err := ka.KeyAgreement.ecdh()
+	if err != nil {
+		return nil, nil, err
+	}
+	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	z, err := priv.ECDH(peer)
+	if err != nil {
+		return nil, nil, err
+	}
+	proto, err := newPinProtocol(version, z)
+	if err != nil {
+		return nil, nil, err
+	}
+	return proto, coseFromECDH(priv.PublicKey()), nil
+}
+
+func (p *pinProtocol) pinHashEnc(pin string) ([]byte, error) {
+	h := sha256.Sum256([]byte(pin))
+	return p.encrypt(h[:16])
+}
+
+// explainPINError adds the remaining attempts to a wrong-PIN error.
+func (d *ctapDevice) explainPINError(err error) error {
+	if errors.Is(err, ctapError(0x31)) {
+		if n, rerr := d.pinRetries(); rerr == nil {
+			return fmt.Errorf("wrong PIN, %d attempts left before the key locks", n)
+		}
+	}
+	return err
+}
+
+// checkNewPIN applies the CTAP rules for a new PIN: at least minLen Unicode
+// code points (4 if the key doesn't say) and at most 63 bytes.
+func checkNewPIN(pin string, minLen uint) error {
+	if minLen == 0 {
+		minLen = 4
+	}
+	if n := utf8.RuneCountInString(pin); uint(n) < minLen {
+		return fmt.Errorf("the PIN must be at least %d characters", minLen)
+	}
+	if len(pin) > 63 {
+		return errors.New("the PIN must be at most 63 bytes")
+	}
+	return nil
+}
+
+// setPIN sets the first PIN on a key, or changes it when oldPIN isn't empty
+// (CTAP 2.1 §6.5.5.5, §6.5.5.6).
+func (d *ctapDevice) setPIN(info *authenticatorInfo, oldPIN, newPIN string) error {
+	if err := checkNewPIN(newPIN, info.MinPINLength); err != nil {
+		return err
+	}
+	proto, platformKey, err := d.keyAgreement(info)
+	if err != nil {
+		return err
+	}
+	padded := make([]byte, 64)
+	copy(padded, newPIN)
+	newPinEnc, err := proto.encrypt(padded)
+	if err != nil {
+		return err
+	}
+	req := clientPINReq{
+		Protocol:     proto.version,
+		SubCommand:   pinSetPIN,
+		KeyAgreement: platformKey,
+		NewPinEnc:    newPinEnc,
+	}
+	msg := newPinEnc
+	if oldPIN != "" {
+		if req.PinHashEnc, err = proto.pinHashEnc(oldPIN); err != nil {
+			return err
+		}
+		req.SubCommand = pinChangePIN
+		msg = slices.Concat(newPinEnc, req.PinHashEnc)
+	}
+	req.PinUvAuthParam = proto.authenticate(proto.hmacKey, msg)
+	if err := d.cbor(ctapClientPIN, req, nil); err != nil {
+		return d.explainPINError(err)
+	}
+	return nil
 }
 
 // ---------- authenticatorCredentialManagement (CTAP 2.1 §6.8) ----------
