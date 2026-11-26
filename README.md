@@ -33,7 +33,8 @@ security keys behave with different ceremony options.
 - Log export as JSON, with the browser, server settings, and capabilities,
   for bug reports. PRF outputs are redacted.
 - Client capability detection (`getClientCapabilities()`, UVPAA, conditional
-  mediation).
+  mediation). Each capability has a **(?)** button that explains what it
+  means and which part of the page uses it.
 - Signal API calls (`signalUnknownCredential`,
   `signalAllAcceptedCredentials`) when passkeys are deleted or rejected.
 - Failed API requests are logged by the server with the reason, such as an

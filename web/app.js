@@ -557,18 +557,111 @@ async function signalCredentials(user) {
   }
 }
 
+// Explanations for the (?) buttons in the capabilities card.
+const CAP_HELP = {
+  "Secure context":
+    "WebAuthn only works on pages served over HTTPS or from http://localhost. On any other page, the browser hides the API completely.",
+  WebAuthn:
+    "Whether the browser has PublicKeyCredential, the API for creating and using passkeys. Every current browser has it; \"no\" means an old browser or a page that isn't a secure context.",
+  "Platform authenticator (UVPAA)":
+    "Whether this device has a built-in authenticator that can verify you, such as Touch ID, Windows Hello, or an Android screen lock. Sites check this to decide whether to offer \"create a passkey on this device\". It says nothing about security keys or phones.",
+  "Conditional mediation":
+    "Whether the browser can list passkeys in the autofill menu of a username field, so you can sign in without clicking a separate button. The \"Offer passkeys in username autofill\" option on the sign-in form uses this.",
+  "parse*OptionsFromJSON":
+    "Whether the browser can convert the server's JSON options into the binary form that navigator.credentials needs. Without it, this page converts the base64url fields itself. Either way, the result is the same.",
+  "Signal API":
+    "Whether the page can tell the passkey provider about changes on the server, so the provider can hide or update stale passkeys. This page sends a signal when you delete a passkey and when a sign-in fails because the server doesn't know the passkey. Security keys can't act on signals.",
+  conditionalCreate:
+    "Whether a password manager can create a passkey automatically, without a prompt, right after you sign in with a saved password. Sites use this to upgrade password accounts to passkeys.",
+  conditionalGet:
+    "The same as \"Conditional mediation\": passkeys can appear in the username field's autofill menu.",
+  hybridTransport:
+    "Whether you can sign in with a passkey on your phone by scanning a QR code. The phone and this device talk over Bluetooth to prove they're close together, so Bluetooth must be on.",
+  passkeyPlatformAuthenticator:
+    "Whether passkeys work here at all: through a built-in authenticator, or through a phone over the hybrid transport. Broader than userVerifyingPlatformAuthenticator.",
+  userVerifyingPlatformAuthenticator:
+    "The same as \"Platform authenticator (UVPAA)\": this device has a built-in authenticator that can verify you with a biometric or screen lock.",
+  relatedOrigins:
+    "Whether the browser supports Related Origin Requests: one RP ID shared by several domains that are listed in a /.well-known/webauthn file on the RP ID's domain. This server publishes that file.",
+  immediateGet:
+    "Whether the browser supports immediate sign-in requests, which show a prompt only when a matching passkey is already on hand and fail right away otherwise. Sites use them to fall back to another sign-in method without showing an empty dialog.",
+  signalAllAcceptedCredentials:
+    "Whether the page can send the full list of passkeys the server still accepts for an account. The provider can then hide the ones that aren't on the list. This page sends it after you delete a passkey.",
+  signalCurrentUserDetails:
+    "Whether the page can send an account's current username and display name, so the provider updates how its passkeys are labeled after a rename.",
+  signalUnknownCredential:
+    "Whether the page can report a single passkey that the server doesn't recognize. This page sends it when a sign-in fails with an unknown passkey, such as one whose account was deleted.",
+};
+
+const EXTENSION_HELP = {
+  appid:
+    "Lets security keys that were registered with the old U2F API sign in through WebAuthn. Only sites that used U2F need it.",
+  appidExclude:
+    "Stops a security key that's already registered through U2F from being registered again through WebAuthn.",
+  credProps:
+    "Reports after registration whether the new passkey is discoverable, meaning it's stored on the authenticator and can sign in without a username. This page requests it by default.",
+  credProtect:
+    "Lets the site ask a security key to release a passkey only after user verification, such as a PIN, so someone holding the key can't discover the account.",
+  credentialProtectionPolicy:
+    "The WebAuthn name for credProtect's input: which protection level the site asks the security key to apply to a new passkey.",
+  enforceCredentialProtectionPolicy:
+    "Tells the browser to fail registration if the authenticator can't apply the requested credProtect level, rather than creating a less protected passkey.",
+  largeBlob:
+    "Stores a small amount of data, such as a certificate, with a passkey on the authenticator, and reads it back at sign-in.",
+  minPinLength:
+    "Lets the site read the minimum PIN length that a security key enforces. Usually only for enterprise-approved sites.",
+  prf:
+    "Derives a secret from the passkey and a value the site chooses. The same passkey and value always give the same secret, which sites use as an encryption key. This page's \"Evaluate PRF\" option uses it.",
+  hmacCreateSecret:
+    "The security-key-level feature behind PRF: the key computes a secret from a value the site sends. Browsers usually expose it through the prf extension.",
+  credBlob:
+    "Stores a few bytes with a passkey on a security key when it's created.",
+  getCredBlob: "Reads back the bytes stored with credBlob at sign-in.",
+  payment:
+    "Secure Payment Confirmation: uses a passkey to confirm a payment, with the browser showing the amount and merchant in a dialog the site can't change.",
+};
+
+function capHelp(key) {
+  if (CAP_HELP[key]) return CAP_HELP[key];
+  if (key.startsWith("extension:")) {
+    const ext = key.slice("extension:".length);
+    return EXTENSION_HELP[ext] ?? `Whether the browser supports the ${ext} WebAuthn extension.`;
+  }
+  return null;
+}
+
+let capHelpCount = 0;
+
 async function renderCaps() {
   const dl = $("#caps");
   const add = (k, v) => {
     const dt = document.createElement("dt");
     const dd = document.createElement("dd");
-    dt.textContent = k;
+    dt.append(k);
     capabilities[k] = v ?? null;
     if (typeof v === "boolean" || v === undefined) {
       dd.textContent = v === undefined ? "unknown" : v ? "yes" : "no";
       dd.className = v ? "yes" : "no";
     } else dd.textContent = v;
     dl.append(dt, dd);
+
+    const text = capHelp(k);
+    if (!text) return;
+    const help = document.createElement("dd");
+    help.className = "cap-help";
+    help.id = `cap-help-${++capHelpCount}`;
+    help.hidden = true;
+    help.textContent = text;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "help-btn";
+    btn.textContent = "?";
+    btn.setAttribute("aria-label", `What is ${k}?`);
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-controls", help.id);
+    btn.addEventListener("click", () => toggleCapHelp(btn, help));
+    dt.append(" ", btn);
+    dl.append(help);
   };
   add("Secure context", window.isSecureContext);
   add("WebAuthn", !!window.PublicKeyCredential);
@@ -586,6 +679,22 @@ async function renderCaps() {
     }
   }
 }
+
+// Only one explanation is open at a time.
+function toggleCapHelp(btn, help, open = help.hidden) {
+  if (open) closeCapHelp();
+  help.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+}
+
+function closeCapHelp() {
+  for (const b of $$('#caps .help-btn[aria-expanded="true"]')) {
+    toggleCapHelp(b, document.getElementById(b.getAttribute("aria-controls")), false);
+  }
+}
+
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCapHelp(); });
+document.addEventListener("click", (e) => { if (!e.target.closest("#caps")) closeCapHelp(); });
 
 // ---------- wiring ----------
 
