@@ -81,8 +81,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/credentials/{id}", s.handleDeleteCredential)
 	mux.HandleFunc("PATCH /api/credentials/{id}", s.handleRenameCredential)
 	mux.HandleFunc("DELETE /api/me", s.handleDeleteAccount)
-	return logRequests(mux)
+	var h http.Handler = mux
+	if s.cfg.RateLimit > 0 {
+		h = newRateLimiter(s.cfg.RateLimit, s.cfg.TrustProxy).wrap(h)
+	}
+	return logRequests(limitBodies(h))
 }
+
+var errTooManyRequests = errors.New("too many requests: wait a minute and try again")
 
 // ---------- sessions ----------
 
@@ -99,6 +105,16 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) *session {
 		if sess, ok := s.session[c.Value]; ok {
 			return sess
 		}
+	}
+	if len(s.session) >= maxSessions {
+		// Evict the session closest to expiring, which is the oldest one.
+		var oldest string
+		for id, sess := range s.session {
+			if oldest == "" || sess.Expires.Before(s.session[oldest].Expires) {
+				oldest = id
+			}
+		}
+		delete(s.session, oldest)
 	}
 	id := randomString(32)
 	sess := &session{Expires: now.Add(sessionTTL)}
@@ -147,6 +163,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"rpId":    s.cfg.RPID,
 		"rpName":  s.cfg.RPName,
 		"origins": s.cfg.Origins,
+		"notice":  s.cfg.Notice,
 	})
 }
 
@@ -213,17 +230,30 @@ func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	if current != nil {
 		// Signed in: add another passkey to the current account.
 		user = current
+		if s.cfg.MaxPasskeys > 0 && len(user.Credentials) >= s.cfg.MaxPasskeys {
+			writeError(w, http.StatusForbidden, fmt.Errorf("an account can hold at most %d passkeys on this server", s.cfg.MaxPasskeys))
+			return
+		}
 	} else {
 		req.Username = strings.TrimSpace(req.Username)
 		if req.Username == "" {
 			writeError(w, http.StatusBadRequest, errors.New("username is required"))
 			return
 		}
-		var taken bool
+		if len([]rune(req.Username)) > maxNameLen || len([]rune(req.DisplayName)) > maxNameLen {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("username and display name can be at most %d characters", maxNameLen))
+			return
+		}
+		var taken, full bool
 		_ = s.store.View(func(d *storeData) error {
 			taken = d.userByName(req.Username) != nil
+			full = s.cfg.MaxUsers > 0 && len(d.Users) >= s.cfg.MaxUsers
 			return nil
 		})
+		if full {
+			writeError(w, http.StatusForbidden, fmt.Errorf("this server is full (%d accounts); try again after it resets", s.cfg.MaxUsers))
+			return
+		}
 		if taken {
 			writeError(w, http.StatusConflict, fmt.Errorf("username %q is taken; sign in to add a passkey to it", req.Username))
 			return
@@ -307,7 +337,7 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	stored := StoredCredential{
 		Credential: *cred,
-		Nickname:   strings.TrimSpace(r.URL.Query().Get("nickname")),
+		Nickname:   truncate(strings.TrimSpace(r.URL.Query().Get("nickname")), maxNickname),
 		CreatedAt:  time.Now().UTC(),
 	}
 
@@ -320,6 +350,9 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 			if d.userByName(user.Name) != nil {
 				return fmt.Errorf("username %q was taken in the meantime", user.Name)
 			}
+			if s.cfg.MaxUsers > 0 && len(d.Users) >= s.cfg.MaxUsers {
+				return fmt.Errorf("this server is full (%d accounts); try again after it resets", s.cfg.MaxUsers)
+			}
 			user.CreatedAt = time.Now().UTC()
 			user.Credentials = []StoredCredential{stored}
 			d.Users = append(d.Users, user)
@@ -329,6 +362,9 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		u := d.userByID(user.ID)
 		if u == nil {
 			return errors.New("account no longer exists")
+		}
+		if s.cfg.MaxPasskeys > 0 && len(u.Credentials) >= s.cfg.MaxPasskeys {
+			return fmt.Errorf("an account can hold at most %d passkeys on this server", s.cfg.MaxPasskeys)
 		}
 		u.Credentials = append(u.Credentials, stored)
 		saved = u
@@ -515,7 +551,7 @@ func (s *Server) handleRenameCredential(w http.ResponseWriter, r *http.Request) 
 	s.modifyOwnCredential(w, r, func(u *User, id []byte) error {
 		for i := range u.Credentials {
 			if string(u.Credentials[i].ID) == string(id) {
-				u.Credentials[i].Nickname = strings.TrimSpace(body.Nickname)
+				u.Credentials[i].Nickname = truncate(strings.TrimSpace(body.Nickname), maxNickname)
 				return nil
 			}
 		}

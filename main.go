@@ -106,11 +106,22 @@ type serveConfig struct {
 	TLSCert string
 	TLSKey  string
 	AAGUIDs string
+
+	// Limits for a publicly reachable server; zero means unlimited.
+	MaxUsers    int
+	MaxPasskeys int
+	RateLimit   int  // state-changing API requests per minute per client
+	TrustProxy  bool // take the client address from X-Forwarded-For
+	Notice      string
 }
 
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", "localhost:8080", "listen address")
+	defAddr := "localhost:8080"
+	if p := os.Getenv("PORT"); p != "" {
+		defAddr = ":" + p // Cloud Run and similar platforms
+	}
+	addr := fs.String("addr", defAddr, "listen address (env PORT sets :PORT)")
 	origin := fs.String("origin", "", "allowed origin(s), comma-separated (default: derived from -addr)")
 	rpID := fs.String("rp-id", "", "relying party ID (default: hostname of the first origin)")
 	rpName := fs.String("rp-name", "passkeytool", "relying party display name")
@@ -118,6 +129,11 @@ func cmdServe(args []string) error {
 	tlsKey := fs.String("tls-key", "", "TLS key file")
 	data := dataFlag(fs)
 	aaguids := fs.String("aaguids", defaultAAGUIDPath(), `AAGUID name list; downloaded on first use ("off" to disable)`)
+	maxUsers := fs.Int("max-users", 0, "maximum number of accounts (0: unlimited)")
+	maxPasskeys := fs.Int("max-passkeys", 0, "maximum passkeys per account (0: unlimited)")
+	rateLimit := fs.Int("rate-limit", 0, "state-changing API requests per minute per client IP (0: off)")
+	trustProxy := fs.Bool("trust-proxy", false, "take the client IP from the last X-Forwarded-For entry (only behind a proxy that sets it)")
+	notice := fs.String("notice", "", "notice shown at the top of the web app, such as data retention for a public server")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `Usage: passkeytool serve [flags]
 
@@ -135,7 +151,10 @@ Flags:
 		return errors.New("-tls-cert and -tls-key must be used together")
 	}
 
-	cfg := serveConfig{Addr: *addr, RPName: *rpName, Data: *data, TLSCert: *tlsCert, TLSKey: *tlsKey, AAGUIDs: *aaguids}
+	cfg := serveConfig{
+		Addr: *addr, RPName: *rpName, Data: *data, TLSCert: *tlsCert, TLSKey: *tlsKey, AAGUIDs: *aaguids,
+		MaxUsers: *maxUsers, MaxPasskeys: *maxPasskeys, RateLimit: *rateLimit, TrustProxy: *trustProxy, Notice: *notice,
+	}
 	if *origin == "" {
 		host, port, err := net.SplitHostPort(*addr)
 		if err != nil {

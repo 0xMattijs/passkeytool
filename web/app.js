@@ -1102,6 +1102,12 @@ async function init() {
   codes[0].textContent = cfg.rpId;
   codes[1].textContent = cfg.origins.join(", ");
 
+  if (cfg.notice) {
+    const notice = $("#notice");
+    notice.hidden = false;
+    notice.textContent = cfg.notice;
+  }
+
   const banner = $("#banner");
   if (!window.isSecureContext || !window.PublicKeyCredential) {
     banner.hidden = false;

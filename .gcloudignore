@@ -1,0 +1,8 @@
+.git
+.github
+e2e
+passkeytool
+passkeys-data.json
+*.tmp
+.playwright-mcp
+.impeccable

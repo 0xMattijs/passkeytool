@@ -114,6 +114,42 @@ The RP ID defaults to the hostname of the first origin.
 | `-data`     | `passkeys-data.json` | Data file (also `PASSKEYS_DATA`)              |
 | `-tls-cert`, `-tls-key` | —        | Serve HTTPS directly                          |
 | `-aaguids`  | user cache dir       | AAGUID name list, or `off`                    |
+| `-max-users` | `0` (unlimited)     | Maximum number of accounts                    |
+| `-max-passkeys` | `0` (unlimited)  | Maximum passkeys per account                  |
+| `-rate-limit` | `0` (off)          | State-changing API requests per minute per IP |
+| `-trust-proxy` | off               | Take the client IP from the last `X-Forwarded-For` entry |
+| `-notice`   | —                    | Notice shown at the top of the web app        |
+
+If the `PORT` environment variable is set, the default listen address is
+`:PORT`. The server always caps request bodies at 1 MB, sessions at 10,000,
+and names at 64 characters.
+
+## Host it publicly
+
+Running `serve` on the internet needs HTTPS on a real hostname, because
+WebAuthn refuses plain HTTP outside localhost. It also needs the limits
+above, so strangers can't fill the server's disk or memory. Use
+`-trust-proxy` only behind a proxy that appends the client address to
+`X-Forwarded-For`; otherwise clients can forge it.
+
+`deploy.sh` deploys the container image to
+[Cloud Run](https://cloud.google.com/run), which provides HTTPS and a
+`run.app` hostname and fits in the free tier. It builds the image locally
+with Docker, so it doesn't need Cloud Build.
+
+```sh
+PROJECT=my-project ./deploy.sh
+```
+
+The project needs billing enabled and the Cloud Run and Artifact Registry
+APIs turned on. Set `REGION` (default `europe-west4`) or `GCLOUD_ACCOUNT` to
+override the defaults. To serve on your own domain, map it to the service
+(see [Cloud Run domain mapping](https://cloud.google.com/run/docs/mapping-custom-domains))
+and set `ORIGIN=https://passkeys.example.com`. The `run.app` URL then keeps
+working as a related origin. The service runs one instance at most, because
+sessions live in memory, and scales to zero when idle. Data lives in the
+container's `/tmp`, so accounts disappear when the container stops. The
+notice on the page tells visitors so.
 
 ## Manage data
 
