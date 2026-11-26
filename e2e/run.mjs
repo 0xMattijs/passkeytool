@@ -18,7 +18,7 @@ if (existsSync(dotnetHome)) process.env.PATH = `${dotnetHome}:${process.env.PATH
 process.env.DOTNET_CLI_TELEMETRY_OPTOUT = "1";
 process.env.DOTNET_NOLOGO = "1";
 const work = mkdtempSync(join(tmpdir(), "passkeys-e2e-"));
-const tool = join(work, "passkeys-test");
+const tool = join(work, "passkeytool");
 
 // Each scenario lists the spec, the authenticator, and the flows to check.
 const scenarios = [

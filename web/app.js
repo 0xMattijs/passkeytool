@@ -1,4 +1,4 @@
-// Passkeys Test web client. No dependencies.
+// passkeytool web client. No dependencies.
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -524,7 +524,7 @@ function renderCerts(certs) {
 function exportLog() {
   const report = {
     exportedAt: new Date().toISOString(),
-    tool: "passkeys-test",
+    tool: "passkeytool",
     page: location.origin,
     userAgent: navigator.userAgent,
     userAgentData: navigator.userAgentData ? { brands: navigator.userAgentData.brands, platform: navigator.userAgentData.platform, mobile: navigator.userAgentData.mobile } : undefined,
@@ -536,7 +536,7 @@ function exportLog() {
   const blob = new Blob([JSON.stringify(report, redactPRF, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `passkeys-test-log-${report.exportedAt.replace(/[:.]/g, "-")}.json`;
+  a.download = `passkeytool-log-${report.exportedAt.replace(/[:.]/g, "-")}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
@@ -824,7 +824,7 @@ function managementPages({ browser, os }) {
       out.push({
         label: "This tool's key command",
         detail: "Lists, deletes, and resets passkeys on a USB security key from the terminal.",
-        url: "./passkeys-test key ls",
+        url: "./passkeytool key ls",
       });
       break;
   }

@@ -48,7 +48,7 @@ func cmdKey(args []string) error {
 }
 
 func keyUsage() {
-	fmt.Fprint(os.Stderr, `Usage: passkeys-test key <subcommand> [flags]
+	fmt.Fprint(os.Stderr, `Usage: passkeytool key <subcommand> [flags]
 
 Manage passkeys stored on a USB security key (Linux, CTAP 2.1).
 
@@ -241,11 +241,11 @@ func openCredManager(device string) (*ctapDevice, *credManager, string, error) {
 	}
 	if !info.Options["clientPin"] {
 		d.Close()
-		return nil, nil, "", fmt.Errorf("%s has no PIN set; set one with: passkeys-test key pin", label)
+		return nil, nil, "", fmt.Errorf("%s has no PIN set; set one with: passkeytool key pin", label)
 	}
 	if info.ForcePINChange {
 		d.Close()
-		return nil, nil, "", fmt.Errorf("%s requires a new PIN before use; change it with: passkeys-test key pin", label)
+		return nil, nil, "", fmt.Errorf("%s requires a new PIN before use; change it with: passkeytool key pin", label)
 	}
 	pin, err := readPIN("PIN for " + label)
 	if err != nil {
@@ -358,7 +358,7 @@ func cmdKeyDelete(args []string) error {
 	data := dataFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
-		return errors.New("usage: passkeys-test key rm [-device PATH] [-y] [-server] CREDENTIAL_ID")
+		return errors.New("usage: passkeytool key rm [-device PATH] [-y] [-server] CREDENTIAL_ID")
 	}
 	id, err := decodeB64(fs.Arg(0))
 	if err != nil {
@@ -402,7 +402,7 @@ func cmdKeyDelete(args []string) error {
 			return nil
 		})
 		if owner != "" {
-			fmt.Printf("the server still lists it for %s; remove it with: passkeys-test delete-credential %s\n", owner, b64(id))
+			fmt.Printf("the server still lists it for %s; remove it with: passkeytool delete-credential %s\n", owner, b64(id))
 		}
 		return nil
 	}
@@ -520,7 +520,7 @@ aren't affected.
 		}
 		return err
 	}
-	fmt.Println("Reset done. The key has no passkeys and no PIN. Set a PIN with: passkeys-test key pin")
+	fmt.Println("Reset done. The key has no passkeys and no PIN. Set a PIN with: passkeytool key pin")
 	return nil
 }
 

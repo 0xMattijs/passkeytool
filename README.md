@@ -1,4 +1,4 @@
-# passkeys-test
+# passkeytool
 
 A self-contained WebAuthn / passkeys test relying party. It's a single Go
 binary: the `serve` command runs a web app for registering and signing in with
@@ -54,13 +54,13 @@ security keys behave with different ceremony options.
 Requires Go 1.26 or later.
 
 ```sh
-go build -o passkeys-test .
+go build -o passkeytool .
 ```
 
 ## Run
 
 ```sh
-./passkeys-test serve
+./passkeytool serve
 ```
 
 Open <http://localhost:8080>.
@@ -72,7 +72,7 @@ server behind a tunnel and set the origin to the public URL:
 
 ```sh
 cloudflared tunnel --url http://localhost:8080
-./passkeys-test serve -origin https://example-name.trycloudflare.com
+./passkeytool serve -origin https://example-name.trycloudflare.com
 ```
 
 The RP ID defaults to the hostname of the first origin.
@@ -84,7 +84,7 @@ The RP ID defaults to the hostname of the first origin.
 | `-addr`     | `localhost:8080`     | Listen address                                |
 | `-origin`   | derived from `-addr` | Allowed origins, comma-separated              |
 | `-rp-id`    | origin hostname      | Relying party ID                              |
-| `-rp-name`  | `Passkeys Test`      | Relying party display name                    |
+| `-rp-name`  | `passkeytool`        | Relying party display name                    |
 | `-data`     | `passkeys-data.json` | Data file (also `PASSKEYS_DATA`)              |
 | `-tls-cert`, `-tls-key` | —        | Serve HTTPS directly                          |
 | `-aaguids`  | user cache dir       | AAGUID name list, or `off`                    |
@@ -92,12 +92,12 @@ The RP ID defaults to the hostname of the first origin.
 ## Manage data
 
 ```sh
-./passkeys-test users            # list users
-./passkeys-test users -v         # list users and every passkey
-./passkeys-test delete-user alice
-./passkeys-test delete-credential <credential-id>
-./passkeys-test reset -y         # delete everything
-./passkeys-test update-aaguids   # refresh the provider name list
+./passkeytool users            # list users
+./passkeytool users -v         # list users and every passkey
+./passkeytool delete-user alice
+./passkeytool delete-credential <credential-id>
+./passkeytool reset -y         # delete everything
+./passkeytool update-aaguids   # refresh the provider name list
 ```
 
 The CLI reads and writes the same JSON file as the server, so changes show
@@ -113,14 +113,14 @@ server no longer knows, which otherwise keep showing up in the browser's
 account picker.
 
 ```sh
-./passkeys-test key devices                  # list connected keys
-./passkeys-test key info                     # supported features, free slots, PIN retries
-./passkeys-test key ls                       # list passkeys (asks for the PIN)
-./passkeys-test key ls -rp localhost         # only this RP ID
-./passkeys-test key rm <credential-id>       # delete a passkey (asks for the PIN)
-./passkeys-test key rm -server <id>          # also delete it from the data file
-./passkeys-test key pin                      # set or change the PIN
-./passkeys-test key reset                    # erase all passkeys and the PIN
+./passkeytool key devices                  # list connected keys
+./passkeytool key info                     # supported features, free slots, PIN retries
+./passkeytool key ls                       # list passkeys (asks for the PIN)
+./passkeytool key ls -rp localhost         # only this RP ID
+./passkeytool key rm <credential-id>       # delete a passkey (asks for the PIN)
+./passkeytool key rm -server <id>          # also delete it from the data file
+./passkeytool key pin                      # set or change the PIN
+./passkeytool key reset                    # erase all passkeys and the PIN
 ```
 
 CTAP can't remove a PIN, only change it; a reset is the only way to clear
@@ -153,7 +153,7 @@ generated code is licensed 0BSD.
 The same generator is on the command line:
 
 ```sh
-./passkeys-test codegen -lang node -out ./my-app -spec '{"prf":true,"hints":["security-key"]}'
+./passkeytool codegen -lang node -out ./my-app -spec '{"prf":true,"hints":["security-key"]}'
 ```
 
 Every server implements the same HTTP API, so one client and one test
@@ -176,7 +176,7 @@ uses this RP ID. To test it, serve the same instance on two HTTPS hosts (for
 example, two tunnels to one port) and set the RP ID to the first:
 
 ```sh
-./passkeys-test serve -rp-id rp.example.com \
+./passkeytool serve -rp-id rp.example.com \
   -origin https://rp.example.com,https://other.example.net
 ```
 

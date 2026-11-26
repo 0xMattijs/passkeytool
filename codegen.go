@@ -496,7 +496,7 @@ func cmdCodegen(args []string) error {
 	specJSON := fs.String("spec", "", `options as JSON, merged over the defaults, e.g. '{"residentKey":"preferred","prf":true}'`)
 	out := fs.String("out", "", "directory to write the project to (must not exist or be empty)")
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: passkeys-test codegen -lang LANG -out DIR [-spec JSON]
+		fmt.Fprint(os.Stderr, `Usage: passkeytool codegen -lang LANG -out DIR [-spec JSON]
 
 Generate a complete passkey app: a server, a browser client, and a SQL
 schema. Without -out, prints the files to stdout.

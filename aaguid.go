@@ -71,7 +71,7 @@ func defaultAAGUIDPath() string {
 	if err != nil {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "passkeys-test", "combined_aaguid.json")
+	return filepath.Join(dir, "passkeytool", "combined_aaguid.json")
 }
 
 // loadAAGUIDs reads the list from path and makes it the active list.
@@ -97,7 +97,7 @@ func downloadAAGUIDs(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "passkeys-test/"+version)
+	req.Header.Set("User-Agent", "passkeytool/"+version)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

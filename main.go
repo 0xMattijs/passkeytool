@@ -1,4 +1,4 @@
-// Command passkeys-test is a WebAuthn / passkeys test tool. Its serve
+// Command passkeytool is a WebAuthn / passkeys test tool. Its serve
 // subcommand runs a relying party with a web UI; the other subcommands
 // inspect and manage the data file.
 package main
@@ -65,10 +65,10 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `passkeys-test: a WebAuthn / passkeys test relying party
+	fmt.Fprint(os.Stderr, `passkeytool: a WebAuthn / passkeys test relying party
 
 Usage:
-  passkeys-test <command> [flags]
+  passkeytool <command> [flags]
 
 Commands:
   serve               Run the web app and WebAuthn API
@@ -83,7 +83,7 @@ Commands:
   codegen             Generate a complete passkey app (server, client, schema)
   version             Print the version
 
-Run 'passkeys-test <command> -h' for command flags.
+Run 'passkeytool <command> -h' for command flags.
 `)
 }
 
@@ -113,13 +113,13 @@ func cmdServe(args []string) error {
 	addr := fs.String("addr", "localhost:8080", "listen address")
 	origin := fs.String("origin", "", "allowed origin(s), comma-separated (default: derived from -addr)")
 	rpID := fs.String("rp-id", "", "relying party ID (default: hostname of the first origin)")
-	rpName := fs.String("rp-name", "Passkeys Test", "relying party display name")
+	rpName := fs.String("rp-name", "passkeytool", "relying party display name")
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
 	tlsKey := fs.String("tls-key", "", "TLS key file")
 	data := dataFlag(fs)
 	aaguids := fs.String("aaguids", defaultAAGUIDPath(), `AAGUID name list; downloaded on first use ("off" to disable)`)
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: passkeys-test serve [flags]
+		fmt.Fprint(os.Stderr, `Usage: passkeytool serve [flags]
 
 WebAuthn needs a secure context. http://localhost works out of the box.
 For any other host, serve over HTTPS with a certificate the browser trusts
@@ -194,7 +194,7 @@ Flags:
 		}
 	}()
 
-	log.Printf("passkeys-test %s listening on %s", version, cfg.Addr)
+	log.Printf("passkeytool %s listening on %s", version, cfg.Addr)
 	log.Printf("  RP ID:   %s", cfg.RPID)
 	log.Printf("  origins: %s", strings.Join(cfg.Origins, ", "))
 	log.Printf("  data:    %s", cfg.Data)
@@ -270,7 +270,7 @@ func cmdDeleteUser(args []string) error {
 	data := dataFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
-		return errors.New("usage: passkeys-test delete-user [-data FILE] NAME")
+		return errors.New("usage: passkeytool delete-user [-data FILE] NAME")
 	}
 	name := fs.Arg(0)
 	return NewStore(*data).Update(func(d *storeData) error {
@@ -287,7 +287,7 @@ func cmdDeleteCredential(args []string) error {
 	data := dataFlag(fs)
 	_ = fs.Parse(args)
 	if fs.NArg() != 1 {
-		return errors.New("usage: passkeys-test delete-credential [-data FILE] CREDENTIAL_ID")
+		return errors.New("usage: passkeytool delete-credential [-data FILE] CREDENTIAL_ID")
 	}
 	id, err := decodeB64(fs.Arg(0))
 	if err != nil {
